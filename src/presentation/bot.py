@@ -36,13 +36,27 @@ async def on_startup(bot: Bot) -> None:
     await set_bot_commands(bot)
 
 
+# Глобальная переменная для middleware
+_bot_status_middleware = None
+
+
 def create_dispatcher() -> Dispatcher:
     """Create and configure the bot dispatcher with all routers."""
     dp = Dispatcher()
 
     # Register middleware
-    from src.presentation.middleware import NavigationMiddleware
-    dp.callback_query.middleware(NavigationMiddleware())
+    from src.presentation.middleware import NavigationMiddleware, BotStatusMiddleware
+
+    navigation_middleware = NavigationMiddleware()
+    bot_status_middleware = BotStatusMiddleware()
+
+    dp.message.middleware(bot_status_middleware)
+    dp.callback_query.middleware(bot_status_middleware)
+    dp.callback_query.middleware(navigation_middleware)
+
+    # Store middleware globally for access from handlers
+    global _bot_status_middleware
+    _bot_status_middleware = bot_status_middleware
 
     # Register startup handler
     dp.startup.register(on_startup)
@@ -57,6 +71,11 @@ def create_dispatcher() -> Dispatcher:
         dp.include_router(member.router)
 
     return dp
+
+
+def get_bot_status_middleware():
+    """Get bot status middleware instance."""
+    return _bot_status_middleware
 
 
 def create_bot() -> Bot:

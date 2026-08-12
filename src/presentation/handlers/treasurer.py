@@ -735,6 +735,89 @@ async def remind_user(callback: CallbackQuery) -> None:
 
 # ─── Казначей: статистика ────────────────────────
 
+@router.callback_query(F.data.startswith("member_payments:"))
+async def view_member_payments(callback: CallbackQuery) -> None:
+    """Show payment history for a specific member (treasurer/admin view)."""
+    if not await _require_treasurer_or_admin(callback):
+        return
+    user_id = int((callback.data or "").split(":")[1])
+    async for session in get_session():
+        user_repo = UserRepository(session)
+        pay_repo = PaymentRepository(session)
+
+        member = await user_repo.get_by_id(user_id)
+        if not member:
+            await callback.answer("❌ Не найден")
+            return
+
+        payments = await pay_repo.list_by_user(user_id)
+
+        if not payments:
+            text = f"📭 У {member.full_name} пока нет платежей."
+        else:
+            status_icon = {"pending": "⏳", "confirmed": "✅", "rejected": "❌"}
+            lines = [f"<b>История платежей — {member.full_name}:</b>\n"]
+            for p in payments[:20]:
+                icon = status_icon.get(p.status.value, "❓")
+                lines.append(
+                    f"{icon} <b>{p.amount:,.2f}₽</b> за {p.month:02d}/{p.year}"
+                    f" — {p.status.value}"
+                )
+            text = "\n".join(lines)
+
+        await _safe_edit(
+            callback,
+            text,
+            reply_markup=back_keyboard(f"member_view:{user_id}"),
+        )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("remind_user:"))
+async def remind_single_user(callback: CallbackQuery) -> None:
+    """Send a debt reminder to a single member."""
+    if not await _require_treasurer_or_admin(callback):
+        return
+    user_id = int((callback.data or "").split(":")[1])
+    async for session in get_session():
+        user_repo = UserRepository(session)
+        fee_repo = FeeRepository(session)
+        fine_repo = FineRepository(session)
+        settings_repo = ClubSettingsRepository(session)
+
+        member = await user_repo.get_by_id(user_id)
+        if not member:
+            await callback.answer("❌ Не найден")
+            return
+
+        fees = await fee_repo.list_pending_by_user(user_id)
+        fines = await fine_repo.list_active_by_user(user_id)
+        fees_total = sum((f.amount for f in fees), Decimal("0"))
+        fines_total = sum((f.amount for f in fines), Decimal("0"))
+        total = fees_total + fines_total
+
+        if total <= 0:
+            await callback.answer("✅ У участника нет долгов", show_alert=True)
+            return
+
+        payment_details = await settings_repo.get_payment_details()
+
+        try:
+            await callback.bot.send_message(
+                member.telegram_id,
+                debt_reminder_text(
+                    f"{total:,.2f}₽",
+                    f"{fees_total:,.2f}₽",
+                    f"{fines_total:,.2f}₽",
+                    payment_details,
+                ),
+            )
+            await callback.answer("📬 Напоминание отправлено", show_alert=True)
+        except Exception:
+            logger.exception("Failed to send reminder to user %s", user_id)
+            await callback.answer("❌ Не удалось отправить сообщение", show_alert=True)
+    return
+
 @router.callback_query(F.data == "treasurer_stats")
 async def show_stats(callback: CallbackQuery) -> None:
     if not await _require_treasurer_or_admin(callback):

@@ -5,6 +5,7 @@ from aiogram.filters import Command, CommandStart
 from aiogram.types import CallbackQuery, Message
 from typing import cast
 from sqlalchemy.ext.asyncio import AsyncSession
+import asyncio
 
 from src.config.settings import settings
 from src.domain.value_objects.role import UserRole
@@ -15,6 +16,9 @@ from src.presentation.keyboards.common import main_menu_keyboard
 from src.presentation.router_utils import register_or_get_user
 
 router = Router()
+
+# Глобальная переменная для контроля работы бота
+bot_running = True
 
 
 async def _safe_edit(callback: CallbackQuery, *args, **kwargs) -> None:
@@ -109,7 +113,9 @@ async def cmd_help(message: Message) -> None:
             "👑 <b>Администратор</b>\n"
             "• Управление пользователями\n"
             "• Настройки клуба\n"
-            "• Статистика и журнал"
+            "• Статистика и журнал\n"
+            "• /stop_bot - остановить бота\n"
+            "• /restart_bot - перезапустить бота"
         ),
         UserRole.TREASURER: (
             "🔑 <b>Казначей</b>\n"
@@ -131,7 +137,9 @@ async def cmd_help(message: Message) -> None:
         f"<b>Команды:</b>\n"
         f"/start — регистрация и главное меню\n"
         f"/menu — открыть меню\n"
-        f"/help — эта справка\n\n"
+        f"/help — эта справка\n"
+        f"{'/stop_bot - остановить бота (админ)' if user.role == UserRole.ADMIN else ''}\n"
+        f"{'/restart_bot - перезапустить бота (админ)' if user.role == UserRole.ADMIN else ''}\n\n"
         f"{role_text}\n\n"
         f"💡 Используйте кнопки меню для навигации.",
         reply_markup=main_menu_keyboard(user.role),
@@ -237,3 +245,65 @@ async def callback_cancel_action(callback: CallbackQuery, state: FSMContext) -> 
 async def callback_back(callback: CallbackQuery) -> None:
     """Generic back — go to main menu (будет обработан middleware)."""
     await callback_main_menu(callback)
+
+
+@router.message(Command("stop_bot"))
+async def cmd_stop_bot(message: Message) -> None:
+    """Остановить бота (только для админа)."""
+    async for session in get_session():
+        repo = UserRepository(session)
+        user = await repo.get_by_telegram_id(message.from_user.id)
+
+    if not user or user.role != UserRole.ADMIN:
+        await message.answer("⛔ Команда доступна только администраторам.")
+        return
+
+    # Получаем middleware и останавливаем бота
+    from src.presentation.bot import get_bot_status_middleware
+    status_middleware = get_bot_status_middleware()
+
+    if status_middleware:
+        status_middleware.stop_bot()
+
+    await message.answer(
+        "🛑 <b>Бот остановлен!</b>\n\n"
+        "Бот перестанет отвечать на команды.\n\n"
+        "Чтобы запустить бота снова:\n"
+        "1. Отправьте команду /restart_bot\n"
+        "2. Или Railway → Deployments → Restart\n\n"
+        "⚠️ Все пользователи увидят сообщение о том, что бот остановлен."
+    )
+
+    # Логируем остановку
+    print(f"⚠️ Бот остановлен администратором {user.full_name} (ID: {user.telegram_id})")
+
+
+@router.message(Command("restart_bot"))
+async def cmd_restart_bot(message: Message) -> None:
+    """Перезапустить бота (только для админа)."""
+    async for session in get_session():
+        repo = UserRepository(session)
+        user = await repo.get_by_telegram_id(message.from_user.id)
+
+    if not user or user.role != UserRole.ADMIN:
+        await message.answer("⛔ Команда доступна только администраторам.")
+        return
+
+    # Получаем middleware и запускаем бота
+    from src.presentation.bot import get_bot_status_middleware
+    status_middleware = get_bot_status_middleware()
+
+    if status_middleware:
+        status_middleware.start_bot()
+
+    await message.answer(
+        "🔄 <b>Бот перезапущен!</b>\n\n"
+        "Бот снова отвечает на команды.\n\n"
+        "Отправьте /start для продолжения работы.\n\n"
+        "✅ Все пользователи могут использовать бота."
+    )
+
+    # Логируем перезапуск
+    print(f"✅ Бот перезапущен администратором {user.full_name} (ID: {user.telegram_id})")
+
+
