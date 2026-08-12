@@ -1,0 +1,239 @@
+from __future__ import annotations
+
+from aiogram import Router, F
+from aiogram.filters import Command, CommandStart
+from aiogram.types import CallbackQuery, Message
+from typing import cast
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from src.config.settings import settings
+from src.domain.value_objects.role import UserRole
+from src.domain.value_objects.user_status import UserStatus
+from src.infrastructure.database.session import get_session
+from src.infrastructure.repositories.user_repository import UserRepository
+from src.presentation.keyboards.common import main_menu_keyboard
+from src.presentation.router_utils import register_or_get_user
+
+router = Router()
+
+
+async def _safe_edit(callback: CallbackQuery, *args, **kwargs) -> None:
+    """Safely edit callback message if present, otherwise answer the callback."""
+    if callback.message is None:
+        await callback.answer()
+        return
+    msg = cast(Message, callback.message)
+    await msg.edit_text(*args, **kwargs)
+
+
+@router.message(CommandStart())
+async def cmd_start(message: Message) -> None:
+    """Handle /start — register user and show main menu."""
+    async for session in get_session():
+        user = await register_or_get_user(message, session, settings.admin_ids)
+
+    if user:
+        if user.status != UserStatus.ACTIVE:
+            await message.answer(
+                "❌ У вас нет доступа к боту. Обратитесь к администратору.",
+            )
+            return
+        role_label = {
+            UserRole.ADMIN: "Администратор",
+            UserRole.TREASURER: "Казначей",
+            UserRole.MEMBER: "Участник",
+        }.get(user.role, "Участник")
+
+        await message.answer(
+            f"👋 Добро пожаловать, <b>{user.full_name}</b>!\n"
+            f"📌 Роль: {role_label}\n\n"
+            f"🏠 <b>Главное меню</b>\n"
+            f"Выберите раздел:",
+            reply_markup=main_menu_keyboard(user.role),
+        )
+    else:
+        await message.answer("❌ Ошибка регистрации. Попробуйте позже.")
+
+
+@router.message(Command("menu"))
+async def cmd_menu(message: Message) -> None:
+    """Handle /menu — show main menu without re-registration."""
+    async for session in get_session():
+        repo = UserRepository(session)
+        user = await repo.get_by_telegram_id(message.from_user.id)
+
+    if user and user.status != UserStatus.ACTIVE:
+        await message.answer(
+            "❌ У вас нет доступа к боту. Отправьте /start после решения с администратором.",
+        )
+        return
+
+    if user:
+        role_label = {
+            UserRole.ADMIN: "Администратор",
+            UserRole.TREASURER: "Казначей",
+            UserRole.MEMBER: "Участник",
+        }.get(user.role, "Участник")
+
+        await message.answer(
+            f"🏠 <b>Главное меню</b>\n"
+            f"👤 {user.full_name} ({role_label})\n\n"
+            f"Выберите раздел:",
+            reply_markup=main_menu_keyboard(user.role),
+        )
+    else:
+        await message.answer(
+            "❌ Вы не зарегистрированы. Отправьте /start",
+        )
+
+
+@router.message(Command("help"))
+async def cmd_help(message: Message) -> None:
+    """Handle /help — show available commands and info."""
+    async for session in get_session():
+        repo = UserRepository(session)
+        user = await repo.get_by_telegram_id(message.from_user.id)
+
+    if not user:
+        await message.answer("❌ Вы не зарегистрированы. Отправьте /start")
+        return
+
+    if user.status != UserStatus.ACTIVE:
+        await message.answer(
+            "❌ У вас нет доступа к боту. Обратитесь к администратору.",
+        )
+        return
+
+    role_text = {
+        UserRole.ADMIN: (
+            "👑 <b>Администратор</b>\n"
+            "• Управление пользователями\n"
+            "• Настройки клуба\n"
+            "• Статистика и журнал"
+        ),
+        UserRole.TREASURER: (
+            "🔑 <b>Казначей</b>\n"
+            "• Начисление взносов\n"
+            "• Подтверждение платежей\n"
+            "• Управление штрафами\n"
+            "• Расходы клуба"
+        ),
+        UserRole.MEMBER: (
+            "👤 <b>Участник</b>\n"
+            "• Лицевой счёт\n"
+            "• Мои платежи и штрафы\n"
+            "• Отправка подтверждения оплаты"
+        ),
+    }.get(user.role, "")
+
+    await message.answer(
+        f"❓ <b>Помощь</b>\n\n"
+        f"<b>Команды:</b>\n"
+        f"/start — регистрация и главное меню\n"
+        f"/menu — открыть меню\n"
+        f"/help — эта справка\n\n"
+        f"{role_text}\n\n"
+        f"💡 Используйте кнопки меню для навигации.",
+        reply_markup=main_menu_keyboard(user.role),
+    )
+
+
+@router.callback_query(F.data == "main_menu")
+async def callback_main_menu(callback: CallbackQuery) -> None:
+    """Return to main menu."""
+    async for session in get_session():
+        from src.infrastructure.repositories.user_repository import UserRepository
+        repo = UserRepository(session)
+        user = await repo.get_by_telegram_id(callback.from_user.id)
+
+    if user:
+        role_label = {
+            UserRole.ADMIN: "Администратор",
+            UserRole.TREASURER: "Казначей",
+            UserRole.MEMBER: "Участник",
+        }.get(user.role, "Участник")
+
+        await _safe_edit(
+            callback,
+            f"🏠 <b>Главное меню</b>\n"
+            f"👤 {user.full_name} ({role_label})\n\n"
+            f"Выберите раздел:",
+            reply_markup=main_menu_keyboard(user.role),
+        )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "my_budget")
+async def callback_my_budget(callback: CallbackQuery) -> None:
+    """Мой бюджет - личный счёт, платежи, штрафы."""
+    from src.presentation.keyboards.common import my_budget_keyboard
+
+    async for session in get_session():
+        repo = UserRepository(session)
+        user = await repo.get_by_telegram_id(callback.from_user.id)
+
+    if user:
+        await _safe_edit(
+            callback,
+            f"💰 <b>Мой бюджет</b>\n"
+            f"👤 {user.full_name}\n\n"
+            f"Здесь вы можете посмотреть свой счёт, историю платежей и штрафов.",
+            reply_markup=my_budget_keyboard(),
+        )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "club_budget")
+async def callback_club_budget(callback: CallbackQuery) -> None:
+    """Бюджет клуба - для казначея и админа."""
+    from src.presentation.keyboards.common import club_budget_keyboard
+
+    async for session in get_session():
+        repo = UserRepository(session)
+        user = await repo.get_by_telegram_id(callback.from_user.id)
+
+    if user and user.role in (UserRole.TREASURER, UserRole.ADMIN):
+        await _safe_edit(
+            callback,
+            f"💼 <b>Бюджет клуба</b>\n\n"
+            f"Управление взносами, платежами, штрафами и расходами клуба.",
+            reply_markup=club_budget_keyboard(),
+        )
+    else:
+        await callback.answer("⛔ Нет доступа", show_alert=True)
+    await callback.answer()
+
+
+@router.callback_query(F.data == "admin_management")
+async def callback_admin_management(callback: CallbackQuery) -> None:
+    """Управление - только для админа."""
+    from src.presentation.keyboards.common import admin_management_keyboard
+
+    async for session in get_session():
+        repo = UserRepository(session)
+        user = await repo.get_by_telegram_id(callback.from_user.id)
+
+    if user and user.role == UserRole.ADMIN:
+        await _safe_edit(
+            callback,
+            f"👑 <b>Управление клубом</b>\n\n"
+            f"Пользователи, настройки, журнал действий и экспорт данных.",
+            reply_markup=admin_management_keyboard(),
+        )
+    else:
+        await callback.answer("⛔ Нет доступа", show_alert=True)
+    await callback.answer()
+
+
+@router.callback_query(F.data == "cancel_action")
+async def callback_cancel_action(callback: CallbackQuery, state: FSMContext) -> None:
+    """Отмена текущего действия и возврат в главное меню."""
+    await state.clear()
+    await callback.answer("❌ Действие отменено")
+    await callback_main_menu(callback)
+
+
+@router.callback_query(F.data == "back")
+async def callback_back(callback: CallbackQuery) -> None:
+    """Generic back — go to main menu (будет обработан middleware)."""
+    await callback_main_menu(callback)
