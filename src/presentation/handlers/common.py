@@ -3,7 +3,6 @@ from __future__ import annotations
 from aiogram import Router, F
 from aiogram.filters import Command, CommandStart
 from aiogram.types import CallbackQuery, Message
-from typing import cast
 from sqlalchemy.ext.asyncio import AsyncSession
 import asyncio
 
@@ -14,20 +13,9 @@ from src.infrastructure.database.session import get_session
 from src.infrastructure.repositories.user_repository import UserRepository
 from src.presentation.keyboards.common import main_menu_keyboard
 from src.presentation.router_utils import register_or_get_user
+from src.presentation.utils import safe_edit
 
 router = Router()
-
-# Глобальная переменная для контроля работы бота
-bot_running = True
-
-
-async def _safe_edit(callback: CallbackQuery, *args, **kwargs) -> None:
-    """Safely edit callback message if present, otherwise answer the callback."""
-    if callback.message is None:
-        await callback.answer()
-        return
-    msg = cast(Message, callback.message)
-    await msg.edit_text(*args, **kwargs)
 
 
 @router.message(CommandStart())
@@ -161,7 +149,7 @@ async def callback_main_menu(callback: CallbackQuery) -> None:
             UserRole.MEMBER: "Участник",
         }.get(user.role, "Участник")
 
-        await _safe_edit(
+        await safe_edit(
             callback,
             f"🏠 <b>Главное меню</b>\n"
             f"👤 {user.full_name} ({role_label})\n\n"
@@ -181,7 +169,7 @@ async def callback_my_budget(callback: CallbackQuery) -> None:
         user = await repo.get_by_telegram_id(callback.from_user.id)
 
     if user:
-        await _safe_edit(
+        await safe_edit(
             callback,
             f"💰 <b>Мой бюджет</b>\n"
             f"👤 {user.full_name}\n\n"
@@ -201,7 +189,7 @@ async def callback_club_budget(callback: CallbackQuery) -> None:
         user = await repo.get_by_telegram_id(callback.from_user.id)
 
     if user and user.role in (UserRole.TREASURER, UserRole.ADMIN):
-        await _safe_edit(
+        await safe_edit(
             callback,
             f"💼 <b>Бюджет клуба</b>\n\n"
             f"Управление взносами, платежами, штрафами и расходами клуба.",
@@ -222,7 +210,7 @@ async def callback_admin_management(callback: CallbackQuery) -> None:
         user = await repo.get_by_telegram_id(callback.from_user.id)
 
     if user and user.role == UserRole.ADMIN:
-        await _safe_edit(
+        await safe_edit(
             callback,
             f"👑 <b>Управление клубом</b>\n\n"
             f"Пользователи, настройки, журнал действий и экспорт данных.",

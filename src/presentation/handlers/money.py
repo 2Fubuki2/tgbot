@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import re
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
@@ -25,8 +26,10 @@ from src.presentation.keyboards.common import (
     payment_type_keyboard,
 )
 from src.presentation.states import PaymentStates
+from src.presentation.utils import safe_edit, require_role, require_treasurer_or_admin
 
 router = Router()
+logger = logging.getLogger(__name__)
 
 MONTH_NAMES = {
     "январь": 1, "january": 1, "jan": 1,
@@ -56,7 +59,7 @@ async def _require_treasurer_or_admin(callback: CallbackQuery) -> bool:
     return is_allowed
 
 
-async def _safe_edit(callback: CallbackQuery, *args, **kwargs) -> None:
+async def safe_edit(callback: CallbackQuery, *args, **kwargs) -> None:
     if callback.message is None:
         await callback.answer()
         return
@@ -111,7 +114,7 @@ def _payment_kind_from_text(text: str) -> str:
 async def member_pay_start(callback: CallbackQuery, state: FSMContext) -> None:
     await state.update_data(pay_kind="fee")
     await state.set_state(PaymentStates.waiting_amount)
-    await _safe_edit(
+    await safe_edit(
         callback,
         "📤 <b>Я оплатил</b>\n\n"
         "Что именно оплатили?\n\n"
@@ -137,7 +140,7 @@ async def member_pay_type(callback: CallbackQuery, state: FSMContext) -> None:
     await state.update_data(pay_kind=pay_kind)
     await state.set_state(PaymentStates.waiting_amount)
     label = "штраф" if pay_kind == "fine" else "ежемесячный взнос"
-    await _safe_edit(
+    await safe_edit(
         callback,
         f"📤 <b>Оплата {label}</b>\n\n"
         "Введите <b>сумму</b> и, при необходимости, месяц или описание.\n"
@@ -237,7 +240,7 @@ async def _pay_ask_comment(source, state: FSMContext) -> None:
 
     await state.set_state(PaymentStates.waiting_comment)
     if isinstance(source, CallbackQuery):
-        await _safe_edit(
+        await safe_edit(
             source,
             "💬 Напишите <b>комментарий</b> к платежу (или /skip):",
             reply_markup=confirm_cancel_keyboard("pay_skip_comment", "back"),
@@ -264,19 +267,10 @@ async def member_pay_comment(message: Message, state: FSMContext) -> None:
     else:
         await state.update_data(pay_comment=message.text.strip())
 
-    class FakeCallback:
-        def __init__(self, msg):
-            self.message = msg
-            self.from_user = msg.from_user
-            self.bot = msg.bot
-
-        async def answer(self):
-            pass
-
-    await _pay_finalize(FakeCallback(message), state)
+    await _pay_finalize(message.from_user.id, message, state)
 
 
-async def _pay_finalize(callback, state: FSMContext) -> None:
+async def _pay_finalize(user_id, message, state: FSMContext) -> None:
     data = await state.get_data()
 
     async for session in get_session():
@@ -288,10 +282,10 @@ async def _pay_finalize(callback, state: FSMContext) -> None:
             user = await user_repo.get_by_id(int(target_user_id))
             payer_name = user.full_name if user else "Участник"
         else:
-            user = await user_repo.get_by_telegram_id(callback.from_user.id)
+            user = await user_repo.get_by_telegram_id(user_id)
             payer_name = user.full_name if user else "Участник"
         if not user:
-            await callback.message.answer("❌ Ошибка: пользователь не найден")
+            await message.answer("❌ Ошибка: пользователь не найден")
             await state.clear()
             return
 
@@ -328,12 +322,12 @@ async def _pay_finalize(callback, state: FSMContext) -> None:
                     try:
                         await callback.bot.send_photo(t.telegram_id, data["pay_receipt"], caption=f"Чек к платежу #{created.id}")
                     except Exception:
-                        pass
+                        logger.exception("Failed to send receipt photo for payment #%s", created.id)
                 await callback.bot.edit_message_reply_markup(t.telegram_id, msg.message_id, reply_markup=kb)
             except Exception:
-                pass
+                logger.exception("Failed to notify treasurer/admin about payment #%s", created.id)
 
-        await callback.message.answer("✅ Платёж отправлен на подтверждение!\nОжидайте, пока казначей его подтвердит.")
+        await message.answer("✅ Платёж отправлен на подтверждение!\nОжидайте, пока казначей его подтвердит.")
     await state.clear()
 
 
@@ -344,7 +338,7 @@ async def treasurer_manual_pay(callback: CallbackQuery, state: FSMContext) -> No
     user_id = int((callback.data or "").split(":", 1)[1])
     await state.update_data(pay_target_user_id=user_id, pay_kind="fee")
     await state.set_state(PaymentStates.waiting_amount)
-    await _safe_edit(
+    await safe_edit(
         callback,
         "💳 <b>Принять оплату</b>\n\nВведите сумму оплаты для участника:",
         reply_markup=back_keyboard(),
@@ -384,7 +378,7 @@ async def member_pay_fine(callback: CallbackQuery) -> None:
             status=PaymentStatus.PENDING,
         )
         created = await pay_repo.create(payment)
-        await _safe_edit(
+        await safe_edit(
             callback,
             f"✅ Запрос на оплату штрафа #{fine.id} отправлен на подтверждение.\nСумма: <b>{amount:,.2f}₽</b>",
             reply_markup=back_keyboard(),
@@ -392,18 +386,23 @@ async def member_pay_fine(callback: CallbackQuery) -> None:
 
         treasurers = await user_repo.list_by_role(UserRole.TREASURER)
         admins = await user_repo.list_by_role(UserRole.ADMIN)
+        bot = callback.bot
+        if bot is None:
+            await callback.answer("❌ Не удалось отправить уведомление о платеже.", show_alert=True)
+            return
+
         for t in treasurers + admins:
             try:
-                msg = await callback.bot.send_message(
+                msg = await bot.send_message(
                     t.telegram_id,
                     f"📤 <b>Новый платёж по штрафу</b>\n👤 {payer.full_name}\n💰 Сумма: <b>{amount:,.2f}₽</b>\n📌 Штраф #{fine.id}",
                 )
-                await callback.bot.edit_message_reply_markup(
+                await bot.edit_message_reply_markup(
                     t.telegram_id,
                     msg.message_id,
                     reply_markup=payment_action_keyboard(int(created.id) if created and created.id is not None else 0),
                 )
             except Exception:
-                pass
+                logger.exception("Failed to notify about fine payment #%s", created.id)
 
     await callback.answer()

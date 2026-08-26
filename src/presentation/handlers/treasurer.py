@@ -7,7 +7,6 @@ from decimal import Decimal
 from aiogram import Router, F
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
-from typing import cast
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
@@ -47,32 +46,11 @@ from src.presentation.texts import (
     debt_reminder_text,
     stats_text,
 )
+from src.presentation.utils import safe_edit, require_role, require_treasurer_or_admin
 
 router = Router()
 
 logger = logging.getLogger(__name__)
-
-
-async def _safe_edit(callback: CallbackQuery, *args, **kwargs) -> None:
-    """Safely edit callback message if present, otherwise answer the callback."""
-    if callback.message is None:
-        await callback.answer()
-        return
-    msg = cast(Message, callback.message)
-    await msg.edit_text(*args, **kwargs)
-
-
-async def _require_treasurer_or_admin(callback: CallbackQuery) -> bool:
-    """Check if user has treasurer or admin role."""
-    is_allowed = False
-    async for session in get_session():
-        repo = UserRepository(session)
-        user = await repo.get_by_telegram_id(callback.from_user.id)
-        if user and (user.role == UserRole.TREASURER or user.role == UserRole.ADMIN):
-            is_allowed = True
-    if not is_allowed:
-        await callback.answer("⛔ Нет доступа", show_alert=True)
-    return is_allowed
 
 
 # ─── Участник: просмотр себя ──────────────────────
@@ -123,7 +101,7 @@ async def member_account(callback: CallbackQuery) -> None:
         if unpaid_months:
             text += "❌ <b>Долг:</b> " + ", ".join(unpaid_months[:6])
 
-        await _safe_edit(callback, text, reply_markup=back_keyboard())
+        await safe_edit(callback, text, reply_markup=back_keyboard())
 
     await callback.answer()
 
@@ -155,7 +133,7 @@ async def member_payments(callback: CallbackQuery) -> None:
                 )
             text = "\n".join(lines)
 
-        await _safe_edit(callback, text, reply_markup=back_keyboard())
+        await safe_edit(callback, text, reply_markup=back_keyboard())
     await callback.answer()
 
 
@@ -168,7 +146,7 @@ async def member_payments_for_user(callback: CallbackQuery) -> None:
         pay_repo = PaymentRepository(session)
 
         user = await user_repo.get_by_id(user_id)
-        if not user:
+        if not user or user.id is None:
             await callback.answer("❌ Пользователь не найден")
             return
 
@@ -187,7 +165,7 @@ async def member_payments_for_user(callback: CallbackQuery) -> None:
                 )
             text = "\n".join(lines)
 
-        await _safe_edit(callback, text, reply_markup=back_keyboard())
+        await safe_edit(callback, text, reply_markup=back_keyboard())
     await callback.answer()
 
 
@@ -222,7 +200,7 @@ async def member_fines(callback: CallbackQuery) -> None:
             text = "\n".join(lines)
             keyboard = build_kb(keyboard_rows + [[("🔙 Назад", "back")]]) if keyboard_rows else back_keyboard()
 
-        await _safe_edit(callback, text, reply_markup=keyboard)
+        await safe_edit(callback, text, reply_markup=keyboard)
     await callback.answer()
 
 
@@ -237,7 +215,7 @@ async def member_details(callback: CallbackQuery) -> None:
             f"💳 <b>Реквизиты для оплаты</b>\n\n"
             f"{club_settings.get('payment_details', 'Не указаны')}"
         )
-        await _safe_edit(callback, text, reply_markup=back_keyboard())
+        await safe_edit(callback, text, reply_markup=back_keyboard())
     await callback.answer()
 
 
@@ -246,7 +224,7 @@ async def member_details(callback: CallbackQuery) -> None:
 @router.callback_query(F.data == "treasurer_assess_fees")
 async def assess_fees(callback: CallbackQuery) -> None:
     """Assess monthly fees for all active members."""
-    if not await _require_treasurer_or_admin(callback):
+    if not await require_treasurer_or_admin(callback):
         return
     async for session in get_session():
         user_repo = UserRepository(session)
@@ -259,7 +237,7 @@ async def assess_fees(callback: CallbackQuery) -> None:
         now = datetime.utcnow()
 
         if last and last[0] == now.year and last[1] == now.month:
-            await _safe_edit(
+            await safe_edit(
                 callback,
                 no_fee_needed(),
                 reply_markup=back_keyboard(),
@@ -316,10 +294,10 @@ async def assess_fees(callback: CallbackQuery) -> None:
                         f"Оплатить можно через меню 💰 Мой бюджет → 📤 Я оплатил",
                     )
                 except Exception:
-                    pass
+                    logger.exception("Failed to notify member %s about fee assessment", member.telegram_id)
 
         total = monthly_fee * assessed_count
-        await _safe_edit(
+        await safe_edit(
             callback,
             fee_assessment_result(assessed_count, f"{total:,.2f}₽"),
             reply_markup=back_keyboard(),
@@ -331,10 +309,10 @@ async def assess_fees(callback: CallbackQuery) -> None:
 
 @router.callback_query(F.data == "treasurer_user_search")
 async def treasurer_user_search(callback: CallbackQuery, state: FSMContext) -> None:
-    if not await _require_treasurer_or_admin(callback):
+    if not await require_treasurer_or_admin(callback):
         return
     await state.set_state(SearchUserStates.waiting_query)
-    await _safe_edit(
+    await safe_edit(
         callback,
         "🔍 <b>Поиск участника</b>\n\nВведите имя, username или Telegram ID:",
         reply_markup=back_keyboard("treasurer_members"),
@@ -367,7 +345,7 @@ async def treasurer_user_search_query(message: Message, state: FSMContext) -> No
 @router.callback_query(F.data == "treasurer_pending")
 async def list_pending_payments(callback: CallbackQuery) -> None:
     """Show pending payments for treasurer (paginated, one per page)."""
-    if not await _require_treasurer_or_admin(callback):
+    if not await require_treasurer_or_admin(callback):
         return
     await _show_pending_page(callback, 0)
 
@@ -382,7 +360,7 @@ async def _show_pending_page(callback: CallbackQuery, page: int) -> None:
 
         if not payments:
             try:
-                await _safe_edit(
+                await safe_edit(
                     callback,
                     "✅ Нет ожидающих платежей.",
                     reply_markup=back_keyboard(),
@@ -425,7 +403,7 @@ async def _show_pending_page(callback: CallbackQuery, page: int) -> None:
         kb_rows.append([("🔙 Назад", "back")])
 
         try:
-            await _safe_edit(callback, text, reply_markup=build_kb(kb_rows))
+            await safe_edit(callback, text, reply_markup=build_kb(kb_rows))
         except Exception:
             await callback.message.answer(text, reply_markup=build_kb(kb_rows))
 
@@ -435,7 +413,7 @@ async def _show_pending_page(callback: CallbackQuery, page: int) -> None:
 @router.callback_query(F.data.startswith("pending_page:"))
 async def pending_page(callback: CallbackQuery) -> None:
     """Navigate between pending payment pages."""
-    if not await _require_treasurer_or_admin(callback):
+    if not await require_treasurer_or_admin(callback):
         return
     page = int((callback.data or "").split(":")[1])
     await _show_pending_page(callback, page)
@@ -445,7 +423,7 @@ async def pending_page(callback: CallbackQuery) -> None:
 
 @router.callback_query(F.data.startswith("payment_confirm:"))
 async def confirm_payment(callback: CallbackQuery) -> None:
-    if not await _require_treasurer_or_admin(callback):
+    if not await require_treasurer_or_admin(callback):
         return
     payment_id = int((callback.data or "").split(":")[1])
     succeeded = False
@@ -515,7 +493,7 @@ async def confirm_payment(callback: CallbackQuery) -> None:
                     details={"user_id": payment.user_id, "amount": str(payment.amount)},
                 ))
 
-            await _safe_edit(
+            await safe_edit(
                 callback,
                 f"✅ Платёж {payment_id} подтверждён!",
                 reply_markup=back_keyboard(),
@@ -543,7 +521,7 @@ async def confirm_payment(callback: CallbackQuery) -> None:
 
 @router.callback_query(F.data.startswith("payment_reject:"))
 async def reject_payment(callback: CallbackQuery) -> None:
-    if not await _require_treasurer_or_admin(callback):
+    if not await require_treasurer_or_admin(callback):
         return
     payment_id = int((callback.data or "").split(":")[1])
     # Получаем причину отказа из callback data, если она есть
@@ -569,7 +547,7 @@ async def reject_payment(callback: CallbackQuery) -> None:
             payment.confirmed_at = datetime.utcnow()
             await pay_repo.update(payment)
 
-            await _safe_edit(
+            await safe_edit(
                 callback,
                 f"❌ Платёж {payment_id} отклонён.",
                 reply_markup=back_keyboard(),
@@ -589,7 +567,7 @@ async def reject_payment(callback: CallbackQuery) -> None:
                         f"Пожалуйста, свяжитесь с казначеем для уточнения.",
                     )
             except Exception:
-                pass
+                logger.exception("Failed to notify user %s about rejected payment", payment.user_id)
 
             succeeded = True
         if succeeded:
@@ -602,14 +580,14 @@ async def reject_payment(callback: CallbackQuery) -> None:
 
 @router.callback_query(F.data == "treasurer_members")
 async def list_members(callback: CallbackQuery) -> None:
-    if not await _require_treasurer_or_admin(callback):
+    if not await require_treasurer_or_admin(callback):
         return
     async for session in get_session():
         user_repo = UserRepository(session)
         members = await user_repo.list_active()
 
         if not members:
-            await _safe_edit(
+            await safe_edit(
                 callback,
                 "📭 Нет активных участников.",
                 reply_markup=back_keyboard(),
@@ -618,7 +596,7 @@ async def list_members(callback: CallbackQuery) -> None:
             return
 
         users_list = [(int(m.id) if m.id is not None else 0, f"{m.full_name}") for m in members]
-        await _safe_edit(
+        await safe_edit(
             callback,
             f"👥 <b>Участники клуба</b> ({len(members)}):",
             reply_markup=members_list_keyboard(users_list),
@@ -633,7 +611,7 @@ async def members_page(callback: CallbackQuery) -> None:
         user_repo = UserRepository(session)
         members = await user_repo.list_active()
         users_list = [(int(m.id) if m.id is not None else 0, f"{m.full_name}") for m in members]
-        await _safe_edit(
+        await safe_edit(
             callback,
             f"👥 <b>Участники клуба</b> ({len(members)}):",
             reply_markup=members_list_keyboard(users_list, page),
@@ -670,7 +648,7 @@ async def view_member(callback: CallbackQuery) -> None:
             f"📅 В клубе с: {member.joined_at.strftime('%d.%m.%Y') if member.joined_at else '?'}"
         )
 
-        await _safe_edit(
+        await safe_edit(
             callback,
             text,
             reply_markup=member_detail_keyboard(user_id),
@@ -700,7 +678,7 @@ async def remind_user(callback: CallbackQuery) -> None:
         total = fees_total + fines_total
 
         if total <= 0:
-            await _safe_edit(
+            await safe_edit(
                 callback,
                 f"✅ У {user.full_name} нет задолженности.",
                 reply_markup=back_keyboard(),
@@ -719,13 +697,13 @@ async def remind_user(callback: CallbackQuery) -> None:
                     payment_details,
                 ),
             )
-            await _safe_edit(
+            await safe_edit(
                 callback,
                 f"📬 Напоминание отправлено <b>{user.full_name}</b>.",
                 reply_markup=back_keyboard(),
             )
         except Exception:
-            await _safe_edit(
+            await safe_edit(
                 callback,
                 f"⚠️ Не удалось отправить напоминание <b>{user.full_name}</b>.",
                 reply_markup=back_keyboard(),
@@ -735,92 +713,9 @@ async def remind_user(callback: CallbackQuery) -> None:
 
 # ─── Казначей: статистика ────────────────────────
 
-@router.callback_query(F.data.startswith("member_payments:"))
-async def view_member_payments(callback: CallbackQuery) -> None:
-    """Show payment history for a specific member (treasurer/admin view)."""
-    if not await _require_treasurer_or_admin(callback):
-        return
-    user_id = int((callback.data or "").split(":")[1])
-    async for session in get_session():
-        user_repo = UserRepository(session)
-        pay_repo = PaymentRepository(session)
-
-        member = await user_repo.get_by_id(user_id)
-        if not member:
-            await callback.answer("❌ Не найден")
-            return
-
-        payments = await pay_repo.list_by_user(user_id)
-
-        if not payments:
-            text = f"📭 У {member.full_name} пока нет платежей."
-        else:
-            status_icon = {"pending": "⏳", "confirmed": "✅", "rejected": "❌"}
-            lines = [f"<b>История платежей — {member.full_name}:</b>\n"]
-            for p in payments[:20]:
-                icon = status_icon.get(p.status.value, "❓")
-                lines.append(
-                    f"{icon} <b>{p.amount:,.2f}₽</b> за {p.month:02d}/{p.year}"
-                    f" — {p.status.value}"
-                )
-            text = "\n".join(lines)
-
-        await _safe_edit(
-            callback,
-            text,
-            reply_markup=back_keyboard(f"member_view:{user_id}"),
-        )
-    await callback.answer()
-
-
-@router.callback_query(F.data.startswith("remind_user:"))
-async def remind_single_user(callback: CallbackQuery) -> None:
-    """Send a debt reminder to a single member."""
-    if not await _require_treasurer_or_admin(callback):
-        return
-    user_id = int((callback.data or "").split(":")[1])
-    async for session in get_session():
-        user_repo = UserRepository(session)
-        fee_repo = FeeRepository(session)
-        fine_repo = FineRepository(session)
-        settings_repo = ClubSettingsRepository(session)
-
-        member = await user_repo.get_by_id(user_id)
-        if not member:
-            await callback.answer("❌ Не найден")
-            return
-
-        fees = await fee_repo.list_pending_by_user(user_id)
-        fines = await fine_repo.list_active_by_user(user_id)
-        fees_total = sum((f.amount for f in fees), Decimal("0"))
-        fines_total = sum((f.amount for f in fines), Decimal("0"))
-        total = fees_total + fines_total
-
-        if total <= 0:
-            await callback.answer("✅ У участника нет долгов", show_alert=True)
-            return
-
-        payment_details = await settings_repo.get_payment_details()
-
-        try:
-            await callback.bot.send_message(
-                member.telegram_id,
-                debt_reminder_text(
-                    f"{total:,.2f}₽",
-                    f"{fees_total:,.2f}₽",
-                    f"{fines_total:,.2f}₽",
-                    payment_details,
-                ),
-            )
-            await callback.answer("📬 Напоминание отправлено", show_alert=True)
-        except Exception:
-            logger.exception("Failed to send reminder to user %s", user_id)
-            await callback.answer("❌ Не удалось отправить сообщение", show_alert=True)
-    return
-
 @router.callback_query(F.data == "treasurer_stats")
 async def show_stats(callback: CallbackQuery) -> None:
-    if not await _require_treasurer_or_admin(callback):
+    if not await require_treasurer_or_admin(callback):
         return
     async for session in get_session():
         pay_repo = PaymentRepository(session)
@@ -849,7 +744,7 @@ async def show_stats(callback: CallbackQuery) -> None:
             active,
             f"{total_active_fines:,.2f}₽",
         )
-        await _safe_edit(callback, text, reply_markup=back_keyboard())
+        await safe_edit(callback, text, reply_markup=back_keyboard())
     await callback.answer()
 
 
@@ -858,7 +753,7 @@ async def show_stats(callback: CallbackQuery) -> None:
 @router.callback_query(F.data == "treasurer_remind")
 async def send_reminders(callback: CallbackQuery) -> None:
     """Send debt reminders to all debtors."""
-    if not await _require_treasurer_or_admin(callback):
+    if not await require_treasurer_or_admin(callback):
         return
     async for session in get_session():
         user_repo = UserRepository(session)
@@ -893,9 +788,9 @@ async def send_reminders(callback: CallbackQuery) -> None:
                 )
                 sent += 1
             except Exception:
-                pass
+                logger.exception("Failed to send reminder to member %s", member.telegram_id)
 
-        await _safe_edit(
+        await safe_edit(
             callback,
             f"📬 Напоминания отправлены <b>{sent}</b> должникам.",
             reply_markup=back_keyboard(),

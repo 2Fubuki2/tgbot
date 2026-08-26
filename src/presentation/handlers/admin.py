@@ -2,18 +2,13 @@ from __future__ import annotations
 
 import io
 import json
-import os
-import re
-import tempfile
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from html import escape
 
-from aiogram import Router, F, Bot
+from aiogram import Router, F
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, Message
-from typing import cast
-import logging
+from aiogram.types import CallbackQuery, InputFile, Message
 
 from src.domain.entities.audit_log import AuditLog
 from src.domain.entities.expense import Expense
@@ -44,7 +39,6 @@ from src.presentation.keyboards.common import (
     confirm_keyboard,
     expense_categories_keyboard,
     main_menu_keyboard,
-    payment_type_keyboard,
     user_actions_keyboard,
 )
 from src.presentation.texts import (
@@ -61,7 +55,6 @@ from src.presentation.states import (
 )
 
 router = Router()
-logger = logging.getLogger(__name__)
 
 
 async def _safe_edit(callback: CallbackQuery, *args, **kwargs) -> None:
@@ -69,8 +62,7 @@ async def _safe_edit(callback: CallbackQuery, *args, **kwargs) -> None:
     if callback.message is None:
         await callback.answer()
         return
-    msg = cast(Message, callback.message)
-    await msg.edit_text(*args, **kwargs)
+    await callback.message.edit_text(*args, **kwargs)
 
 
 # ─── Фильтр для проверки прав ────────────────────
@@ -94,36 +86,25 @@ async def _require_role(callback: CallbackQuery, role: UserRole) -> bool:
 async def admin_treasury(callback: CallbackQuery) -> None:
     if not await _require_role(callback, UserRole.ADMIN):
         return
-    await _safe_edit(
-        callback,
+    if callback.message is None:
+        await callback.answer()
+        return
+    msg = callback.message
+    await msg.edit_text(
         "💰 <b>Казна клуба</b>\nВыберите действие:",
         reply_markup=main_menu_keyboard(UserRole.TREASURER),
     )
     await callback.answer()
-
-
-# ─── Админ: управление пользователями ────────────
-
-@router.callback_query(F.data == "admin_users")
-async def admin_users(callback: CallbackQuery, state: FSMContext) -> None:
-    if not await _require_role(callback, UserRole.ADMIN):
-        return
-    await state.clear()
-    await _safe_edit(
-        callback,
-        "👥 <b>Управление пользователями</b>",
-        reply_markup=admin_users_keyboard(),
-    )
-    await callback.answer()
-
-
 @router.callback_query(F.data == "admin_user_add")
 async def admin_user_add_start(callback: CallbackQuery, state: FSMContext) -> None:
     if not await _require_role(callback, UserRole.ADMIN):
         return
     await state.set_state(AddUserStates.waiting_telegram_id)
-    await _safe_edit(
-        callback,
+    if callback.message is None:
+        await callback.answer()
+        return
+    msg = callback.message
+    await msg.edit_text(
         "➕ <b>Добавление участника</b>\n\n"
         "Введите <b>Telegram ID</b> или <b>@username</b> пользователя:\n"
         "• ID: число из @userinfobot\n"
@@ -137,20 +118,12 @@ async def admin_user_add_start(callback: CallbackQuery, state: FSMContext) -> No
 async def admin_user_add_tgid(message: Message, state: FSMContext) -> None:
     if message.text is None:
         return
-
-    # Проверка на отмену
-    if message.text.strip().lower() in ("/cancel", "отмена"):
-        await state.clear()
-        await message.answer("❌ Добавление участника отменено")
-        return
-
     text = message.text.strip()
 
     # @username — resolve via Telegram API
     if text.startswith("@"):
         try:
-            bot = cast(Bot, message.bot)
-            chat = await bot.get_chat(text)
+            chat = await message.bot.get_chat(text)
             tg_id = chat.id
             resolved_name = chat.full_name or chat.first_name or text
             resolved_username = chat.username
@@ -205,7 +178,10 @@ async def admin_user_add_name(message: Message, state: FSMContext) -> None:
 
 @router.callback_query(AddUserStates.waiting_role, F.data.startswith("adduser_role:"))
 async def admin_user_add_role(callback: CallbackQuery, state: FSMContext) -> None:
-    role_str = (callback.data or "").split(":")[1]
+    if not callback.data:
+        await callback.answer()
+        return
+    role_str = callback.data.split(":")[1]
     role = UserRole(role_str)
     data = await state.get_data()
 
@@ -213,34 +189,6 @@ async def admin_user_add_role(callback: CallbackQuery, state: FSMContext) -> Non
         repo = UserRepository(session)
         existing = await repo.get_by_telegram_id(data["telegram_id"])
         if existing:
-            # If user exists but was expelled, restore them instead of failing
-            if existing.status == UserStatus.EXPELLED:
-                existing.full_name = data["full_name"]
-                existing.username = data.get("resolved_username")
-                existing.role = role
-                existing.status = UserStatus.ACTIVE
-                restored = await repo.update(existing)
-
-                admin = await repo.get_by_telegram_id(callback.from_user.id)
-                if admin:
-                    ar = AuditLogRepository(session)
-                    await ar.create(AuditLog(
-                        user_id=int(admin.id) if admin.id is not None else 0,
-                        action="restore_user",
-                        entity_type="user",
-                        entity_id=int(restored.id) if restored.id is not None else 0,
-                        details={"restored_user": restored.full_name, "telegram_id": restored.telegram_id, "role": role_str},
-                    ))
-
-                logger.info("admin_user_add_role: restored expelled user id=%s by admin=%s", restored.id, callback.from_user.id)
-
-                await _safe_edit(
-                    callback,
-                    f"✅ Пользователь <b>{restored.full_name}</b> восстановлен и добавлен.",
-                    reply_markup=back_keyboard(),
-                )
-                break
-
             await _safe_edit(
                 callback,
                 f"❌ Пользователь с ID {data['telegram_id']} уже существует!",
@@ -285,7 +233,7 @@ async def admin_user_add_role(callback: CallbackQuery, state: FSMContext) -> Non
             f"Роль: {role_str}\n"
             f"Telegram: {profile_line}\n\n"
             f"👥 <b>Список участников</b> (выделен новый пользователь):",
-            reply_markup=admin_users_list_keyboard(users_list, highlight_id=created.id),
+            reply_markup=admin_users_list_keyboard(users_list, highlight_id=int(created.id) if created.id is not None else None),
         )
     await state.clear()
     await callback.answer()
@@ -302,7 +250,7 @@ async def admin_user_list(callback: CallbackQuery) -> None:
 async def admin_users_page(callback: CallbackQuery) -> None:
     if not await _require_role(callback, UserRole.ADMIN):
         return
-    page = int((callback.data or "").split(":")[1])
+    page = int(callback.data.split(":")[1])
     await _show_admin_user_page(callback, page)
 
 
@@ -343,7 +291,10 @@ async def admin_change_role(callback: CallbackQuery) -> None:
     if not await _require_role(callback, UserRole.ADMIN):
         return
     # Format: admin_role_admin:user_id or admin_role_treasurer:user_id or admin_role_member:user_id
-    parts = (callback.data or "").split(":")
+    if not callback.data:
+        await callback.answer()
+        return
+    parts = callback.data.split(":")
     role_str = parts[0].replace("admin_role_", "")
     user_id = int(parts[1])
 
@@ -390,14 +341,13 @@ async def admin_change_role(callback: CallbackQuery) -> None:
 async def admin_archive_user(callback: CallbackQuery) -> None:
     if not await _require_role(callback, UserRole.ADMIN):
         return
-    user_id = int((callback.data or "").split(":")[1])
+    user_id = int(callback.data.split(":")[1])
 
     async for session in get_session():
         repo = UserRepository(session)
         user = await repo.get_by_id(user_id)
         if not user:
-            await _safe_edit(
-                callback,
+            await callback.message.edit_text(
                 "❌ Пользователь не найден",
                 reply_markup=back_keyboard(),
             )
@@ -406,8 +356,7 @@ async def admin_archive_user(callback: CallbackQuery) -> None:
         user.status = UserStatus.ARCHIVED
         await repo.update(user)
 
-        await _safe_edit(
-            callback,
+        await callback.message.edit_text(
             f"📦 Пользователь <b>{user.full_name}</b> архивирован.",
             reply_markup=back_keyboard(),
         )
@@ -421,25 +370,22 @@ async def admin_delete_confirm(callback: CallbackQuery) -> None:
     """Ask for confirmation before deleting a user."""
     if not await _require_role(callback, UserRole.ADMIN):
         return
-    user_id = int((callback.data or "").split(":")[1])
+    user_id = int(callback.data.split(":")[1])
 
     async for session in get_session():
         repo = UserRepository(session)
         user = await repo.get_by_id(user_id)
         if not user:
-            await _safe_edit(
-                callback,
+            await callback.message.edit_text(
                 "❌ Пользователь не найден",
                 reply_markup=back_keyboard(),
             )
             break
 
-        await _safe_edit(
-            callback,
+        await callback.message.edit_text(
             f"⚠️ <b>Вы уверены?</b>\n\n"
             f"Пользователь <b>{user.full_name}</b> "
-            f"(ID: {user.telegram_id}) будет удалён.\n\n"
-            f"Выберите действие:",
+            f"(ID: {user.telegram_id}) будет удалён.",
             reply_markup=build_kb([
                 [("🗑 Удалить (soft)", f"admin_delete_execute:{user_id}")],
                 [("🧨 Удалить навсегда", f"admin_hard_delete_execute:{user_id}")],
@@ -451,10 +397,13 @@ async def admin_delete_confirm(callback: CallbackQuery) -> None:
 
 @router.callback_query(F.data.startswith("admin_delete_execute:"))
 async def admin_delete_execute(callback: CallbackQuery) -> None:
-    """Actually delete the user."""
+    """Soft-delete a user after confirmation."""
     if not await _require_role(callback, UserRole.ADMIN):
         return
-    user_id = int((callback.data or "").split(":")[1])
+    if not callback.data:
+        await callback.answer()
+        return
+    user_id = int(callback.data.split(":")[1])
 
     async for session in get_session():
         repo = UserRepository(session)
@@ -469,11 +418,10 @@ async def admin_delete_execute(callback: CallbackQuery) -> None:
         previous_role = user.role.value if user.role else None
         await repo.delete(user_id)
 
-        # Audit
         admin = await repo.get_by_telegram_id(callback.from_user.id)
         if admin:
             await audit_repo.create(AuditLog(
-                user_id=int(admin.id) if admin.id is not None else 0,
+                user_id=admin.id,
                 action="delete_user",
                 entity_type="user",
                 entity_id=user_id,
@@ -484,9 +432,8 @@ async def admin_delete_execute(callback: CallbackQuery) -> None:
                 },
             ))
 
-        await _safe_edit(
-            callback,
-            f"🗑 Пользователь <b>{name}</b> полностью удалён.",
+        await callback.message.edit_text(
+            f"🗑 Пользователь <b>{name}</b> удалён.",
             reply_markup=back_keyboard(),
         )
     await callback.answer()
@@ -497,7 +444,10 @@ async def admin_hard_delete_execute(callback: CallbackQuery) -> None:
     """Physically remove the user from DB."""
     if not await _require_role(callback, UserRole.ADMIN):
         return
-    user_id = int((callback.data or "").split(":")[1])
+    if not callback.data:
+        await callback.answer()
+        return
+    user_id = int(callback.data.split(":")[1])
 
     async for session in get_session():
         repo = UserRepository(session)
@@ -522,11 +472,13 @@ async def admin_hard_delete_execute(callback: CallbackQuery) -> None:
                 details={"deleted_user": name, "telegram_id": tg_id},
             ))
 
-        await _safe_edit(
-            callback,
-            f"🧨 Пользователь <b>{name}</b> удалён навсегда.",
-            reply_markup=back_keyboard(),
-        )
+        if callback.message is None:
+            await callback.answer()
+        else:
+            await callback.message.edit_text(
+                f"🧨 Пользователь <b>{name}</b> удалён навсегда.",
+                reply_markup=back_keyboard(),
+            )
     await callback.answer()
 
 
@@ -535,7 +487,7 @@ async def callback_user_actions(callback: CallbackQuery) -> None:
     """Show user actions keyboard."""
     if not await _require_role(callback, UserRole.ADMIN):
         return
-    user_id = int((callback.data or "").split(":")[1])
+    user_id = int(callback.data.split(":")[1])
 
     async for session in get_session():
         repo = UserRepository(session)
@@ -544,8 +496,7 @@ async def callback_user_actions(callback: CallbackQuery) -> None:
             await callback.answer("❌ Пользователь не найден")
             return
 
-        await _safe_edit(
-            callback,
+        await callback.message.edit_text(
             f"👤 <b>{user.full_name}</b> — управление:",
             reply_markup=user_actions_keyboard(user_id, status=user.status.value if user.status else None),
         )
@@ -557,8 +508,7 @@ async def admin_user_search(callback: CallbackQuery, state: FSMContext) -> None:
     if not await _require_role(callback, UserRole.ADMIN):
         return
     await state.set_state(SearchUserStates.waiting_query)
-    await _safe_edit(
-        callback,
+    await callback.message.edit_text(
         "🔍 <b>Поиск пользователя</b>\n\nВведите имя, username или Telegram ID:",
         reply_markup=back_keyboard("admin_users"),
     )
@@ -567,8 +517,6 @@ async def admin_user_search(callback: CallbackQuery, state: FSMContext) -> None:
 
 @router.message(SearchUserStates.waiting_query)
 async def admin_user_search_query(message: Message, state: FSMContext) -> None:
-    if message.text is None:
-        return
     query = message.text.strip()
     async for session in get_session():
         repo = UserRepository(session)
@@ -595,12 +543,51 @@ async def admin_user_search_query(message: Message, state: FSMContext) -> None:
     await state.clear()
 
 
+@router.callback_query(F.data.startswith("fine_cancel:"))
+async def fine_cancel(callback: CallbackQuery) -> None:
+    if not await _require_role(callback, UserRole.TREASURER):
+        return
+    fine_id = int(callback.data.split(":")[1])
+    async for session in get_session():
+        fine_repo = FineRepository(session)
+        user_repo = UserRepository(session)
+        audit_repo = AuditLogRepository(session)
+
+        fine = await fine_repo.get_by_id(fine_id)
+        if not fine:
+            await callback.answer("❌ Штраф не найден", show_alert=True)
+            return
+
+        if fine.status != FineStatus.ACTIVE:
+            await callback.answer("❌ Штраф уже отменён.", show_alert=True)
+            return
+
+        fine.status = FineStatus.CANCELLED
+        fine.cancelled_by = (await user_repo.get_by_telegram_id(callback.from_user.id)).id if await user_repo.get_by_telegram_id(callback.from_user.id) else None
+        fine.cancelled_at = datetime.utcnow()
+        await fine_repo.update(fine)
+
+        await audit_repo.create(AuditLog(
+            user_id=fine.cancelled_by or 0,
+            action="cancel_fine",
+            entity_type="fine",
+            entity_id=fine.id,
+            details={"user_id": fine.user_id, "fine_id": fine.id},
+        ))
+
+        await callback.message.edit_text(
+            f"✅ Штраф #{fine.id} отменён.",
+            reply_markup=back_keyboard(),
+        )
+    await callback.answer()
+
+
 # ─── Админ: восстановление доступа пользователя ───────────────────
 @router.callback_query(F.data.startswith("admin_restore:"))
 async def admin_restore(callback: CallbackQuery) -> None:
     if not await _require_role(callback, UserRole.ADMIN):
         return
-    user_id = int((callback.data or "").split(":")[1])
+    user_id = int(callback.data.split(":")[1])
 
     async for session in get_session():
         repo = UserRepository(session)
@@ -611,20 +598,20 @@ async def admin_restore(callback: CallbackQuery) -> None:
             await callback.answer("❌ Пользователь не найден")
             return
 
-        logger.info("admin_restore: admin=%s restoring user_id=%s", callback.from_user.id, user_id)
-
-        # Try to restore previous role from latest delete audit log (search by entity_id)
-        audit_repo = AuditLogRepository(session)
-        logs = await audit_repo.list_all(limit=200)
-        last_log = next(
-            (l for l in logs if l.action == "delete_user" and l.entity_type == "user" and l.entity_id == user.id),
-            None,
-        )
+        # Try to restore previous role from latest delete audit log
+        stmt = select(AuditLogModel).where(
+            AuditLogModel.entity_type == "user",
+            AuditLogModel.entity_id == user.id,
+            AuditLogModel.action == "delete_user",
+        ).order_by(AuditLogModel.created_at.desc()).limit(1)
+        res = await session.execute(stmt)
+        last_log = res.scalar_one_or_none()
 
         restored_role = None
         if last_log and last_log.details:
             try:
-                restored_role = last_log.details.get("previous_role") or last_log.details.get("role")
+                details = json.loads(last_log.details)
+                restored_role = details.get("previous_role") or details.get("role")
             except Exception:
                 restored_role = None
 
@@ -638,15 +625,14 @@ async def admin_restore(callback: CallbackQuery) -> None:
         admin = await repo.get_by_telegram_id(callback.from_user.id)
         if admin:
             await audit_repo.create(AuditLog(
-                user_id=int(admin.id) if admin.id is not None else 0,
+                user_id=admin.id,
                 action="restore_user",
                 entity_type="user",
                 entity_id=user.id,
                 details={"restored_user": user.full_name, "user_id": user.id},
             ))
 
-        await _safe_edit(
-            callback,
+        await callback.message.edit_text(
             f"✅ Пользователь <b>{user.full_name}</b> восстановлен и получил доступ.",
             reply_markup=back_keyboard(),
         )
@@ -659,8 +645,7 @@ async def admin_restore(callback: CallbackQuery) -> None:
 async def admin_settings(callback: CallbackQuery) -> None:
     if not await _require_role(callback, UserRole.ADMIN):
         return
-    await _safe_edit(
-        callback,
+    await callback.message.edit_text(
         "⚙️ <b>Настройки клуба</b>",
         reply_markup=admin_settings_keyboard(),
     )
@@ -674,8 +659,7 @@ async def admin_set_fee(callback: CallbackQuery, state: FSMContext) -> None:
     async for session in get_session():
         repo = ClubSettingsRepository(session)
         fee = await repo.get_monthly_fee()
-        await _safe_edit(
-            callback,
+        await callback.message.edit_text(
             f"💰 Текущий размер взноса: <b>{fee:,.2f}₽</b>\n\n"
             f"Введите новую сумму (только число):",
             reply_markup=back_keyboard(),
@@ -686,20 +670,11 @@ async def admin_set_fee(callback: CallbackQuery, state: FSMContext) -> None:
 
 @router.message(SettingsStates.waiting_fee)
 async def admin_set_fee_value(message: Message, state: FSMContext) -> None:
-    if message.text is None:
-        return
-
-    # Проверка на отмену
-    if message.text.strip().lower() in ("/cancel", "отмена"):
-        await state.clear()
-        await message.answer("❌ Изменение взноса отменено")
-        return
-
     try:
         amount = Decimal(message.text.strip().replace(",", "."))
         if amount <= 0:
             raise ValueError
-    except (ValueError, InvalidOperation):
+    except (ValueError, Decimal.InvalidOperation):
         await message.answer("❌ Введите положительное число.")
         return
 
@@ -714,8 +689,7 @@ async def admin_set_fee_value(message: Message, state: FSMContext) -> None:
 async def admin_set_details(callback: CallbackQuery, state: FSMContext) -> None:
     if not await _require_role(callback, UserRole.ADMIN):
         return
-    await _safe_edit(
-        callback,
+    await callback.message.edit_text(
         "💳 Введите новые <b>реквизиты для оплаты</b>:\n"
         "(номер карты, телефон, или любые инструкции)",
         reply_markup=back_keyboard(),
@@ -726,8 +700,6 @@ async def admin_set_details(callback: CallbackQuery, state: FSMContext) -> None:
 
 @router.message(SettingsStates.waiting_details)
 async def admin_set_details_value(message: Message, state: FSMContext) -> None:
-    if message.text is None:
-        return
     async for session in get_session():
         repo = ClubSettingsRepository(session)
         await repo.update(payment_details=message.text)
@@ -739,8 +711,7 @@ async def admin_set_details_value(message: Message, state: FSMContext) -> None:
 async def admin_set_name(callback: CallbackQuery, state: FSMContext) -> None:
     if not await _require_role(callback, UserRole.ADMIN):
         return
-    await _safe_edit(
-        callback,
+    await callback.message.edit_text(
         "🏷 Введите новое <b>название клуба</b>:",
         reply_markup=back_keyboard(),
     )
@@ -750,12 +721,132 @@ async def admin_set_name(callback: CallbackQuery, state: FSMContext) -> None:
 
 @router.message(SettingsStates.waiting_club_name)
 async def admin_set_name_value(message: Message, state: FSMContext) -> None:
-    if message.text is None:
-        return
     async for session in get_session():
         repo = ClubSettingsRepository(session)
         await repo.update(club_name=message.text)
         await message.answer(f"✅ Название клуба: <b>{message.text}</b>")
+    await state.clear()
+
+
+# ─── Казначей: штрафы ────────────────────────────
+
+@router.callback_query(F.data.startswith("fine_issue:"))
+async def fine_issue_start(callback: CallbackQuery, state: FSMContext) -> None:
+    if not await _require_role(callback, UserRole.TREASURER):
+        return
+    user_id = int(callback.data.split(":")[1])
+    await state.update_data(fine_user_id=user_id)
+    await state.set_state(FineStates.waiting_amount)
+    await callback.message.edit_text(
+        "⚠️ <b>Начисление штрафа</b>\n\nВведите сумму штрафа:",
+        reply_markup=back_keyboard(),
+    )
+    await callback.answer()
+
+
+@router.message(FineStates.waiting_amount)
+async def fine_issuer_amount(message: Message, state: FSMContext) -> None:
+    try:
+        amount = Decimal(message.text.strip().replace(",", "."))
+        if amount <= 0:
+            raise ValueError
+        await state.update_data(fine_amount=amount)
+        await state.set_state(FineStates.waiting_reason)
+        await message.answer("Введите <b>причину</b> штрафа:")
+    except (ValueError, Decimal.InvalidOperation):
+        await message.answer("❌ Введите положительное число.")
+
+
+@router.message(FineStates.waiting_reason)
+async def fine_issue_reason(message: Message, state: FSMContext) -> None:
+    await state.update_data(fine_reason=message.text.strip())
+    await state.set_state(FineStates.waiting_comment)
+    await message.answer(
+        "Введите <b>комментарий</b> (или отправьте /skip):",
+        reply_markup=confirm_cancel_keyboard("fine_skip_comment", "back"),
+    )
+
+
+@router.callback_query(F.data == "fine_skip_comment")
+async def fine_skip_comment(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.update_data(fine_comment=None)
+    await _fine_finalize(callback, state)
+
+
+@router.message(FineStates.waiting_comment)
+async def fine_issue_comment(message: Message, state: FSMContext) -> None:
+    if message.text == "/skip":
+        await state.update_data(fine_comment=None)
+    else:
+        await state.update_data(fine_comment=message.text.strip())
+
+    # Simulate callback to reuse finalize
+    class FakeCallback:
+        def __init__(self, msg):
+            self.message = msg
+            self.from_user = message.from_user
+            self.bot = message.bot
+        async def answer(self):
+            pass
+
+    await _fine_finalize(FakeCallback(message), state)
+
+
+async def _fine_finalize(callback, state: FSMContext) -> None:
+    data = await state.get_data()
+    async for session in get_session():
+        user_repo = UserRepository(session)
+        fine_repo = FineRepository(session)
+        audit_repo = AuditLogRepository(session)
+
+        issuer = await user_repo.get_by_telegram_id(callback.from_user.id)
+        if not issuer:
+            await callback.message.answer("❌ Ошибка")
+            await state.clear()
+            return
+
+        user = await user_repo.get_by_id(data["fine_user_id"])
+        fine = Fine(
+            user_id=data["fine_user_id"],
+            amount=data["fine_amount"],
+            reason=data["fine_reason"],
+            comment=data.get("fine_comment"),
+            issued_by=issuer.id,
+            status=FineStatus.ACTIVE,
+        )
+        created = await fine_repo.create(fine)
+
+        await audit_repo.create(AuditLog(
+            user_id=issuer.id,
+            action="issue_fine",
+            entity_type="fine",
+            entity_id=created.id,
+            details={
+                "user_id": data["fine_user_id"],
+                "amount": str(data["fine_amount"]),
+                "reason": data["fine_reason"],
+            },
+        ))
+
+        await callback.message.answer(
+            f"✅ Штраф начислен!\n"
+            f"👤 {user.full_name if user else '?'}\n"
+            f"💰 Сумма: <b>{data['fine_amount']:,.2f}₽</b>\n"
+            f"📌 Причина: {data['fine_reason']}",
+        )
+
+        # Notify user
+        try:
+            if user:
+                await callback.bot.send_message(
+                    user.telegram_id,
+                    f"⚠️ Вам начислен штраф!\n"
+                    f"💰 Сумма: <b>{data['fine_amount']:,.2f}₽</b>\n"
+                    f"📌 Причина: {data['fine_reason']}",
+                )
+        except Exception:
+            pass
+
     await state.clear()
 
 
@@ -765,8 +856,7 @@ async def admin_set_name_value(message: Message, state: FSMContext) -> None:
 async def expense_menu(callback: CallbackQuery) -> None:
     if not await _require_role(callback, UserRole.TREASURER):
         return
-    await _safe_edit(
-        callback,
+    await callback.message.edit_text(
         "💸 <b>Расходы клуба</b>\n\n"
         "Выберите действие:",
         reply_markup=build_kb([
@@ -783,8 +873,7 @@ async def expense_add_start(callback: CallbackQuery, state: FSMContext) -> None:
     if not await _require_role(callback, UserRole.TREASURER):
         return
     await state.set_state(ExpenseStates.waiting_amount)
-    await _safe_edit(
-        callback,
+    await callback.message.edit_text(
         "💸 <b>Добавление расхода</b>\n\nВведите сумму:",
         reply_markup=back_keyboard(),
     )
@@ -793,8 +882,6 @@ async def expense_add_start(callback: CallbackQuery, state: FSMContext) -> None:
 
 @router.message(ExpenseStates.waiting_amount)
 async def expense_add_amount(message: Message, state: FSMContext) -> None:
-    if message.text is None:
-        return
     try:
         amount = Decimal(message.text.strip().replace(",", "."))
         if amount <= 0:
@@ -805,17 +892,18 @@ async def expense_add_amount(message: Message, state: FSMContext) -> None:
             "Выберите <b>категорию</b> расхода:",
             reply_markup=expense_categories_keyboard(),
         )
-    except (ValueError, InvalidOperation):
-        await message.answer("❌ Введите положительное число.")
-
+    except ValueError:
+        await message.answer(
+            "❌ Введите корректную сумму (числом, через точку или запятую):",
+            reply_markup=back_keyboard(),
+        )
 
 @router.callback_query(ExpenseStates.waiting_category, F.data.startswith("expense_cat:"))
 async def expense_add_category(callback: CallbackQuery, state: FSMContext) -> None:
-    category = (callback.data or "").split(":")[1]
+    category = callback.data.split(":")[1]
     await state.update_data(expense_category=category)
     await state.set_state(ExpenseStates.waiting_comment)
-    await _safe_edit(
-        callback,
+    await callback.message.edit_text(
         "Введите <b>комментарий</b> к расходу (или /skip):",
         reply_markup=confirm_cancel_keyboard("expense_skip_comment", "back"),
     )
@@ -830,8 +918,6 @@ async def expense_skip_comment(callback: CallbackQuery, state: FSMContext) -> No
 
 @router.message(ExpenseStates.waiting_comment)
 async def expense_add_comment(message: Message, state: FSMContext) -> None:
-    if message.text is None:
-        return
     if message.text == "/skip":
         await state.update_data(expense_comment=None)
     else:
@@ -865,13 +951,13 @@ async def _expense_finalize(callback, state: FSMContext) -> None:
             amount=data["expense_amount"],
             category=ExpenseCategory(data.get("expense_category", "other")),
             comment=data.get("expense_comment"),
-            created_by=int(creator.id) if creator and creator.id is not None else 0,
+            created_by=creator.id,
             expense_date=date.today(),
         )
         created = await expense_repo.create(expense)
 
         await audit_repo.create(AuditLog(
-            user_id=int(creator.id) if creator and creator.id is not None else 0,
+            user_id=creator.id,
             action="add_expense",
             entity_type="expense",
             entity_id=created.id,
@@ -894,8 +980,7 @@ async def expense_list(callback: CallbackQuery) -> None:
         repo = ExpenseRepository(session)
         expenses = await repo.list_all()
         if not expenses:
-            await _safe_edit(
-                callback,
+            await callback.message.edit_text(
                 "📭 Расходов пока нет.",
                 reply_markup=back_keyboard(),
             )
@@ -907,12 +992,198 @@ async def expense_list(callback: CallbackQuery) -> None:
                     f"📅 {e.expense_date} | <b>{e.amount:,.2f}₽</b> | {e.category.value}\n"
                     f"   {e.comment or ''}"
                 )
-            await _safe_edit(
-                callback,
+            await callback.message.edit_text(
                 "\n".join(lines),
                 reply_markup=back_keyboard(),
             )
     await callback.answer()
+
+
+# ─── Участник: "Я оплатил" ──────────────────────
+
+@router.callback_query(F.data == "member_pay")
+async def member_pay_start(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.set_state(PaymentStates.waiting_amount)
+    await callback.message.edit_text(
+        "📤 <b>Я оплатил</b>\n\n"
+        "Введите <b>сумму</b>, которую оплатили:",
+        reply_markup=back_keyboard(),
+    )
+    await callback.answer()
+
+
+@router.message(PaymentStates.waiting_amount)
+async def member_pay_amount(message: Message, state: FSMContext) -> None:
+    try:
+        amount = Decimal(message.text.strip().replace(",", "."))
+        if amount <= 0:
+            raise ValueError
+        await state.update_data(pay_amount=amount)
+    except (ValueError, Decimal.InvalidOperation):
+        await message.answer("❌ Введите положительное число.")
+        return
+
+    await state.set_state(PaymentStates.waiting_month)
+    now = datetime.utcnow()
+    await message.answer(
+        f"За какой <b>месяц</b> платите?\n"
+        f"(например: {now.month})\n"
+        f"Или год.месяц (например: {now.year}.{now.month}):",
+    )
+
+
+@router.message(PaymentStates.waiting_month)
+async def member_pay_month(message: Message, state: FSMContext) -> None:
+    text = message.text.strip()
+    now = datetime.utcnow()
+
+    if "." in text:
+        parts = text.split(".")
+        year = int(parts[0])
+        month = int(parts[1])
+    else:
+        month = int(text)
+        year = now.year
+
+    if month < 1 or month > 12:
+        await message.answer("❌ Месяц должен быть от 1 до 12.")
+        return
+
+    await state.update_data(pay_month=month, pay_year=year)
+    await state.set_state(PaymentStates.waiting_receipt)
+    await message.answer(
+        "📸 Отправьте <b>фото чека</b> (или подтверждения перевода).\n"
+        "Если фото нет — отправьте /skip:",
+        reply_markup=confirm_cancel_keyboard("pay_skip_receipt", "back"),
+    )
+
+
+@router.callback_query(F.data == "pay_skip_receipt")
+async def pay_skip_receipt(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.update_data(pay_receipt=None)
+    await _pay_ask_comment(callback, state)
+
+
+@router.message(PaymentStates.waiting_receipt)
+async def member_pay_receipt(message: Message, state: FSMContext) -> None:
+    if message.text == "/skip":
+        await state.update_data(pay_receipt=None)
+    elif message.photo:
+        await state.update_data(pay_receipt=message.photo[-1].file_id)
+    else:
+        await message.answer("❌ Отправьте фото или /skip.")
+        return
+
+    await _pay_ask_comment(message, state)
+
+
+async def _pay_ask_comment(source, state: FSMContext) -> None:
+    from aiogram.types import CallbackQuery
+    await state.set_state(PaymentStates.waiting_comment)
+    if isinstance(source, CallbackQuery):
+        await source.message.edit_text(
+            "💬 Напишите <b>комментарий</b> к платежу (или /skip):",
+            reply_markup=confirm_cancel_keyboard("pay_skip_comment", "back"),
+        )
+    else:
+        await source.answer(
+            "💬 Напишите <b>комментарий</b> к платежу (или /skip):",
+            reply_markup=confirm_cancel_keyboard("pay_skip_comment", "back"),
+        )
+
+
+@router.callback_query(F.data == "pay_skip_comment")
+async def pay_skip_comment(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.update_data(pay_comment=None)
+    await _pay_finalize(callback, state)
+
+
+@router.message(PaymentStates.waiting_comment)
+async def member_pay_comment(message: Message, state: FSMContext) -> None:
+    if message.text == "/skip":
+        await state.update_data(pay_comment=None)
+    else:
+        await state.update_data(pay_comment=message.text.strip())
+
+    class FakeCallback:
+        def __init__(self, msg):
+            self.message = msg
+            self.from_user = msg.from_user
+            self.bot = msg.bot
+        async def answer(self):
+            pass
+
+    await _pay_finalize(FakeCallback(message), state)
+
+
+async def _pay_finalize(callback, state: FSMContext) -> None:
+    data = await state.get_data()
+
+    async for session in get_session():
+        user_repo = UserRepository(session)
+        pay_repo = PaymentRepository(session)
+        settings_repo = ClubSettingsRepository(session)
+
+        user = await user_repo.get_by_telegram_id(callback.from_user.id)
+        if not user:
+            await callback.message.answer("❌ Ошибка: пользователь не найден")
+            await state.clear()
+            return
+
+        # Get treasurers to notify
+        treasurers = await user_repo.list_by_role(UserRole.TREASURER)
+        admins = await user_repo.list_by_role(UserRole.ADMIN)
+
+        payment = Payment(
+            user_id=user.id,
+            amount=data["pay_amount"],
+            month=data["pay_month"],
+            year=data["pay_year"],
+            comment=data.get("pay_comment"),
+            receipt_photo_id=data.get("pay_receipt"),
+            status=PaymentStatus.PENDING,
+        )
+        created = await pay_repo.create(payment)
+
+        # Notify treasurers
+        notify_text = (
+            f"📤 <b>Новый платёж</b>\n"
+            f"👤 {user.full_name}\n"
+            f"💰 Сумма: <b>{data['pay_amount']:,.2f}₽</b>\n"
+            f"📅 За: {data['pay_month']:02d}/{data['pay_year']}\n"
+        )
+        if data.get("pay_comment"):
+            notify_text += f"💬 {data['pay_comment']}\n"
+        notify_text += f"\n🆔 Платёж #{created.id}"
+
+        from src.presentation.keyboards.common import payment_action_keyboard
+        for t in treasurers + admins:
+            try:
+                kb = payment_action_keyboard(created.id)
+                msg = await callback.bot.send_message(t.telegram_id, notify_text)
+                # If there's a receipt photo, send it
+                if data.get("pay_receipt"):
+                    try:
+                        await callback.bot.send_photo(
+                            t.telegram_id,
+                            data["pay_receipt"],
+                            caption=f"Чек к платежу #{created.id}",
+                        )
+                    except Exception:
+                        pass
+                # Edit with action buttons
+                await callback.bot.edit_message_reply_markup(
+                    t.telegram_id, msg.message_id,
+                    reply_markup=kb,
+                )
+            except Exception:
+                pass
+
+        await callback.message.answer(
+            f"✅ Платёж отправлен на подтверждение!\n"
+            f"Ожидайте, пока казначей его подтвердит.",
+        )
+    await state.clear()
 
 
 # ─── Админ: статистика ───────────────────────────
@@ -938,7 +1209,7 @@ async def admin_log(callback: CallbackQuery) -> None:
         logs = await repo.list_all(limit=30)
 
         if not logs:
-            await _safe_edit(callback, "📭 Журнал действий пуст.", reply_markup=back_keyboard())
+            await callback.message.edit_text("📭 Журнал действий пуст.", reply_markup=back_keyboard())
             await callback.answer()
             return
 
@@ -947,8 +1218,7 @@ async def admin_log(callback: CallbackQuery) -> None:
             time_str = log.created_at.strftime("%d.%m %H:%M") if log.created_at else "?"
             lines.append(f"{time_str} | {log.action} | {log.entity_type}#{log.entity_id or '?'}")
 
-        await _safe_edit(
-            callback,
+        await callback.message.edit_text(
             "\n".join(lines),
             reply_markup=back_keyboard(),
         )
@@ -1050,23 +1320,30 @@ async def admin_export(callback: CallbackQuery) -> None:
         buffer.name = "treasury_export.json"
         buffer.seek(0)
 
-        bot = cast(Bot, callback.bot)
-        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".json")
-        try:
-            tmp.write(buffer.getvalue())
-            tmp.flush()
-            tmp.close()
-            await bot.send_document(
-                chat_id=callback.from_user.id,
-                document=tmp.name,
-                caption="📄 Экспорт данных клуба",
-                reply_markup=back_keyboard(),
-            )
-        finally:
-            try:
-                os.remove(tmp.name)
-            except Exception:
-                pass
+        await callback.message.answer_document(
+            InputFile(buffer, filename="treasury_export.json"),
+            caption="📄 Экспорт данных клуба",
+            reply_markup=back_keyboard(),
+        )
     await callback.answer()
 
 
+# ─── Казначей: штрафы (список) ───────────────────
+
+@router.callback_query(F.data == "treasurer_fines")
+async def treasurer_fines(callback: CallbackQuery) -> None:
+    if not await _require_role(callback, UserRole.TREASURER):
+        return
+    async for session in get_session():
+        repo = FineRepository(session)
+        fines = await repo.list_active()
+        if not fines:
+            await callback.message.edit_text("✅ Активных штрафов нет.", reply_markup=back_keyboard())
+            await callback.answer()
+            return
+
+        lines = ["⚠️ <b>Активные штрафы</b>:\n"]
+        for f in fines[:20]:
+            lines.append(f"ID#{f.id} — {f.amount:,.2f}₽ — {f.reason}")
+        await callback.message.edit_text("\n".join(lines), reply_markup=back_keyboard())
+    await callback.answer()

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
 
@@ -16,38 +17,21 @@ from src.infrastructure.repositories.audit_repository import AuditLogRepository
 from src.infrastructure.repositories.fine_repository import FineRepository
 from src.infrastructure.repositories.user_repository import UserRepository
 from src.presentation.keyboards.common import back_keyboard, build_kb, confirm_cancel_keyboard
+from src.presentation.utils import safe_edit, require_role
 from src.presentation.states import FineStates
 
 router = Router()
-
-
-async def _safe_edit(callback: CallbackQuery, *args, **kwargs) -> None:
-    if callback.message is None:
-        await callback.answer()
-        return
-    await callback.message.edit_text(*args, **kwargs)
-
-
-async def _require_role(callback: CallbackQuery, role: UserRole) -> bool:
-    is_allowed = False
-    async for session in get_session():
-        repo = UserRepository(session)
-        user = await repo.get_by_telegram_id(callback.from_user.id)
-        if user and user.role in (role, UserRole.ADMIN):
-            is_allowed = True
-    if not is_allowed:
-        await callback.answer("⛔ Нет доступа", show_alert=True)
-    return is_allowed
+logger = logging.getLogger(__name__)
 
 
 @router.callback_query(F.data.startswith("fine_issue:"))
 async def fine_issue_start(callback: CallbackQuery, state: FSMContext) -> None:
-    if not await _require_role(callback, UserRole.TREASURER):
+    if not await require_role(callback, UserRole.TREASURER):
         return
     user_id = int((callback.data or "").split(":", 1)[1])
     await state.update_data(fine_user_id=user_id)
     await state.set_state(FineStates.waiting_amount)
-    await _safe_edit(
+    await safe_edit(
         callback,
         "⚠️ <b>Начисление штрафа</b>\n\nВведите сумму штрафа:",
         reply_markup=back_keyboard(),
@@ -168,14 +152,14 @@ async def _fine_finalize(callback, state: FSMContext) -> None:
                     f"📌 Причина: {data['fine_reason']}",
                 )
         except Exception:
-            pass
+            logger.exception("Failed to notify user %s about fine", data["fine_user_id"])
 
     await state.clear()
 
 
 @router.callback_query(F.data.startswith("fine_cancel:"))
 async def fine_cancel(callback: CallbackQuery) -> None:
-    if not await _require_role(callback, UserRole.TREASURER):
+    if not await require_role(callback, UserRole.TREASURER):
         return
     fine_id = int((callback.data or "").split(":")[1])
     async for session in get_session():
@@ -205,7 +189,7 @@ async def fine_cancel(callback: CallbackQuery) -> None:
             details={"user_id": fine.user_id, "fine_id": fine.id},
         ))
 
-        await _safe_edit(
+        await safe_edit(
             callback,
             f"✅ Штраф #{fine.id} отменён.",
             reply_markup=back_keyboard(),
@@ -215,13 +199,13 @@ async def fine_cancel(callback: CallbackQuery) -> None:
 
 @router.callback_query(F.data == "treasurer_fines")
 async def treasurer_fines(callback: CallbackQuery) -> None:
-    if not await _require_role(callback, UserRole.TREASURER):
+    if not await require_role(callback, UserRole.TREASURER):
         return
     async for session in get_session():
         repo = FineRepository(session)
         fines = await repo.list_active()
         if not fines:
-            await _safe_edit(callback, "✅ Активных штрафов нет.", reply_markup=back_keyboard())
+            await safe_edit(callback, "✅ Активных штрафов нет.", reply_markup=back_keyboard())
             await callback.answer()
             return
 
@@ -230,5 +214,5 @@ async def treasurer_fines(callback: CallbackQuery) -> None:
         for f in fines[:20]:
             lines.append(f"ID#{f.id} — {f.amount:,.2f}₽ — {f.reason}")
             keyboard_rows.append([("💳 Оплатить", f"pay_fine:{f.id}"), ("❌ Отменить", f"fine_cancel:{f.id}")])
-        await _safe_edit(callback, "\n".join(lines), reply_markup=build_kb(keyboard_rows + [[("🔙 Назад", "back")]]))
+        await safe_edit(callback, "\n".join(lines), reply_markup=build_kb(keyboard_rows + [[("🔙 Назад", "back")]]))
     await callback.answer()
