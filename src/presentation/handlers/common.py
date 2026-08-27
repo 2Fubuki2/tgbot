@@ -198,7 +198,6 @@ async def callback_club_budget(callback: CallbackQuery) -> None:
         )
     else:
         await callback.answer("⛔ Нет доступа", show_alert=True)
-    await callback.answer()
 
 
 @router.callback_query(F.data == "admin_management")
@@ -219,7 +218,6 @@ async def callback_admin_management(callback: CallbackQuery) -> None:
         )
     else:
         await callback.answer("⛔ Нет доступа", show_alert=True)
-    await callback.answer()
 
 
 @router.callback_query(F.data == "cancel_action")

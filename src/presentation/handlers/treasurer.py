@@ -36,8 +36,9 @@ from src.presentation.keyboards.common import (
     payment_action_keyboard,
     back_keyboard,
     build_kb,
+    assess_fees_keyboard,
 )
-from src.presentation.states import SearchUserStates
+from src.presentation.states import SearchUserStates, AssessFeesStates
 from src.domain.entities.payment import Payment
 from src.presentation.texts import (
     pending_payment_text,
@@ -127,8 +128,9 @@ async def member_payments(callback: CallbackQuery) -> None:
             for p in payments[:20]:
                 status_icon = {"pending": "⏳", "confirmed": "✅", "rejected": "❌"}
                 icon = status_icon.get(p.status.value, "❓")
+                date_str = p.payment_date.strftime("%d.%m.%Y") if p.payment_date else f"{p.month:02d}/{p.year}"
                 lines.append(
-                    f"{icon} <b>{p.amount:,.2f}₽</b> за {p.month:02d}/{p.year}"
+                    f"{icon} <b>{p.amount:,.2f}₽</b> {date_str}"
                     f" — {p.status.value}"
                 )
             text = "\n".join(lines)
@@ -159,8 +161,9 @@ async def member_payments_for_user(callback: CallbackQuery) -> None:
             for p in payments[:20]:
                 status_icon = {"pending": "⏳", "confirmed": "✅", "rejected": "❌"}
                 icon = status_icon.get(p.status.value, "❓")
+                date_str = p.payment_date.strftime("%d.%m.%Y") if p.payment_date else f"{p.month:02d}/{p.year}"
                 lines.append(
-                    f"{icon} <b>{p.amount:,.2f}₽</b> за {p.month:02d}/{p.year}"
+                    f"{icon} <b>{p.amount:,.2f}₽</b> {date_str}"
                     f" — {p.status.value}"
                 )
             text = "\n".join(lines)
@@ -196,7 +199,7 @@ async def member_fines(callback: CallbackQuery) -> None:
                     f"{status_icon} <b>{remaining:,.2f}₽</b> / {f.amount:,.2f}₽ — {f.reason}"
                 )
                 if f.status == FineStatus.ACTIVE and remaining > 0:
-                    keyboard_rows.append([("💳 Оплатить штраф", f"pay_fine:{f.id}"), ("❌ Отменить штраф", f"fine_cancel:{f.id}")])
+                    keyboard_rows.append([("💳 Оплатить штраф", f"pay_fine:{f.id}")])
             text = "\n".join(lines)
             keyboard = build_kb(keyboard_rows + [[("🔙 Назад", "back")]]) if keyboard_rows else back_keyboard()
 
@@ -223,51 +226,183 @@ async def member_details(callback: CallbackQuery) -> None:
 
 @router.callback_query(F.data == "treasurer_assess_fees")
 async def assess_fees(callback: CallbackQuery) -> None:
-    """Assess monthly fees for all active members."""
+    """Show fee assessment options."""
     if not await require_treasurer_or_admin(callback):
         return
+    await safe_edit(
+        callback,
+        "💰 <b>Начисление взносов</b>\n\n"
+        "Выберите способ начисления:",
+        reply_markup=assess_fees_keyboard(),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "assess_current")
+async def assess_current_month(callback: CallbackQuery) -> None:
+    """Assess fees for current month (quick mode)."""
+    if not await require_treasurer_or_admin(callback):
+        return
+    await _assess_fees_for_period(
+        callback,
+        datetime.utcnow().month,
+        datetime.utcnow().year,
+        None,  # use default monthly fee
+        None,  # no comment
+    )
+
+
+@router.callback_query(F.data == "assess_manual")
+async def assess_manual_start(callback: CallbackQuery, state: FSMContext) -> None:
+    """Start manual fee assessment FSM."""
+    if not await require_treasurer_or_admin(callback):
+        return
+    await state.set_state(AssessFeesStates.waiting_period)
+    await safe_edit(
+        callback,
+        "✏️ <b>Ручное начисление взносов</b>\n\n"
+        "Введите период в формате <b>месяц.год</b> (например: 06.2025):",
+        reply_markup=back_keyboard(),
+    )
+    await callback.answer()
+
+
+@router.message(AssessFeesStates.waiting_period)
+async def assess_fees_period(message: Message, state: FSMContext) -> None:
+    """Handle period input for manual fee assessment."""
+    if message.text is None:
+        return
+    text = message.text.strip()
+    try:
+        # Parse month.year
+        parts = text.split(".")
+        if len(parts) != 2:
+            raise ValueError
+        month = int(parts[0])
+        year = int(parts[1])
+        if not (1 <= month <= 12 and 2000 <= year <= 2100):
+            raise ValueError
+        await state.update_data(assess_month=month, assess_year=year)
+        await state.set_state(AssessFeesStates.waiting_amount)
+        await message.answer(
+            "💰 Введите <b>сумму взноса</b> на человека (число):",
+            reply_markup=back_keyboard(),
+        )
+    except ValueError:
+        await message.answer("❌ Неверный формат. Используйте месяц.год (например: 06.2025)")
+
+
+@router.message(AssessFeesStates.waiting_amount)
+async def assess_fees_amount(message: Message, state: FSMContext) -> None:
+    """Handle amount input for manual fee assessment."""
+    if message.text is None:
+        return
+    try:
+        amount = Decimal(message.text.strip().replace(",", "."))
+        if amount <= 0:
+            raise ValueError
+        await state.update_data(assess_amount=amount)
+        await state.set_state(AssessFeesStates.waiting_comment)
+        await message.answer(
+            "💬 Введите <b>комментарий</b> к начислению (или /skip):",
+            reply_markup=confirm_cancel_keyboard("assess_skip_comment", "back"),
+        )
+    except (ValueError, InvalidOperation):
+        await message.answer("❌ Введите положительное число.")
+
+
+@router.callback_query(AssessFeesStates.waiting_comment, F.data == "assess_skip_comment")
+async def assess_skip_comment(callback: CallbackQuery, state: FSMContext) -> None:
+    """Skip comment and proceed with assessment."""
+    await state.update_data(assess_comment=None)
+    data = await state.get_data()
+    await _assess_fees_for_period(
+        callback,
+        data["assess_month"],
+        data["assess_year"],
+        data["assess_amount"],
+        data.get("assess_comment"),
+    )
+    await state.clear()
+
+
+@router.message(AssessFeesStates.waiting_comment)
+async def assess_fees_comment(message: Message, state: FSMContext) -> None:
+    """Handle comment input for manual fee assessment."""
+    if message.text is None:
+        return
+    if message.text == "/skip":
+        await state.update_data(assess_comment=None)
+    else:
+        await state.update_data(assess_comment=message.text.strip())
+    data = await state.get_data()
+    await _assess_fees_for_period(
+        message,
+        data["assess_month"],
+        data["assess_year"],
+        data["assess_amount"],
+        data.get("assess_comment"),
+    )
+    await state.clear()
+
+
+async def _assess_fees_for_period(
+    source,
+    month: int,
+    year: int,
+    custom_amount: Decimal | None,
+    comment: str | None,
+) -> None:
+    """Assess fees for a specific month/year with optional custom amount and comment."""
+    from aiogram.types import CallbackQuery, Message
+    from datetime import datetime
+
+    is_callback = isinstance(source, CallbackQuery)
+    bot = source.bot if is_callback else source.bot
+    user_id = source.from_user.id
+
     async for session in get_session():
         user_repo = UserRepository(session)
         fee_repo = FeeRepository(session)
         settings_repo = ClubSettingsRepository(session)
         audit_repo = AuditLogRepository(session)
 
-        last = await fee_repo.get_last_assessment()
-        from datetime import datetime
-        now = datetime.utcnow()
-
-        if last and last[0] == now.year and last[1] == now.month:
-            await safe_edit(
-                callback,
-                no_fee_needed(),
-                reply_markup=back_keyboard(),
-            )
-            await callback.answer()
+        # Check if already assessed for this period
+        existing_fees = await fee_repo.list_by_month(month, year)
+        if existing_fees:
+            text = f"ℹ️ Взносы за {month:02d}/{year} уже начислены ранее ({len(existing_fees)} участников)."
+            if is_callback:
+                await safe_edit(source, text, reply_markup=back_keyboard())
+            else:
+                await source.answer(text, reply_markup=back_keyboard())
+            if is_callback:
+                await source.answer()
             return
 
-        monthly_fee = await settings_repo.get_monthly_fee()
+        monthly_fee = custom_amount or await settings_repo.get_monthly_fee()
         members = await user_repo.list_active()
 
         assessed_count = 0
         for member in members:
-            existing = await fee_repo.get_by_user_month(member.id, now.month, now.year)
+            existing = await fee_repo.get_by_user_month(member.id, month, year)
             if existing:
                 continue
 
             fee = MonthlyFee(
                 user_id=member.id,
                 amount=monthly_fee,
-                month=now.month,
-                year=now.year,
+                month=month,
+                year=year,
                 status=FeeStatus.PENDING,
+                comment=comment,
             )
             await fee_repo.create(fee)
             assessed_count += 1
 
-        await settings_repo.update(last_fee_assessment=now)
+        await settings_repo.update(last_fee_assessment=datetime(year, month, 1))
 
         # Audit log
-        user = await user_repo.get_by_telegram_id(callback.from_user.id)
+        user = await user_repo.get_by_telegram_id(user_id)
         if user:
             await audit_repo.create(AuditLog(
                 user_id=int(user.id) if user.id is not None else 0,
@@ -275,34 +410,40 @@ async def assess_fees(callback: CallbackQuery) -> None:
                 entity_type="monthly_fee",
                 details={
                     "count": assessed_count,
-                    "month": now.month,
-                    "year": now.year,
+                    "month": month,
+                    "year": year,
                     "amount": str(monthly_fee),
+                    "comment": comment,
                 },
             ))
 
         # Уведомить всех участников о начислении
         for member in members:
-            existing = await fee_repo.get_by_user_month(member.id, now.month, now.year)
+            existing = await fee_repo.get_by_user_month(member.id, month, year)
             if existing:
                 try:
-                    await callback.bot.send_message(
-                        member.telegram_id,
+                    notify_text = (
                         f"💰 <b>Начислен взнос</b>\n\n"
-                        f"📅 За: {now.month:02d}/{now.year}\n"
-                        f"💵 Сумма: <b>{monthly_fee:,.2f}₽</b>\n\n"
-                        f"Оплатить можно через меню 💰 Мой бюджет → 📤 Я оплатил",
+                        f"📅 За: {month:02d}/{year}\n"
+                        f"💵 Сумма: <b>{monthly_fee:,.2f}₽</b>\n"
                     )
+                    if comment:
+                        notify_text += f"💬 {comment}\n"
+                    notify_text += f"\nОплатить можно через меню 💰 Мой бюджет → 📤 Я оплатил"
+                    await bot.send_message(member.telegram_id, notify_text)
                 except Exception:
                     logger.exception("Failed to notify member %s about fee assessment", member.telegram_id)
 
         total = monthly_fee * assessed_count
-        await safe_edit(
-            callback,
-            fee_assessment_result(assessed_count, f"{total:,.2f}₽"),
-            reply_markup=back_keyboard(),
-        )
-    await callback.answer()
+        result_text = fee_assessment_result(assessed_count, f"{total:,.2f}₽")
+        if comment:
+            result_text += f"\n💬 Комментарий: {comment}"
+
+        if is_callback:
+            await safe_edit(source, result_text, reply_markup=back_keyboard())
+            await source.answer()
+        else:
+            await source.answer(result_text, reply_markup=back_keyboard())
 
 
 # ─── Казначей: ожидающие платежи ─────────────────
@@ -379,11 +520,12 @@ async def _show_pending_page(callback: CallbackQuery, page: int) -> None:
         payer = await user_repo.get_by_id(p.user_id)
         name = payer.full_name if payer else f"ID:{p.user_id}"
 
+        date_str = p.payment_date.strftime("%d.%m.%Y") if p.payment_date else f"{p.month:02d}/{p.year}"
         text = (
             f"📨 <b>Ожидающие платежи</b> ({page + 1}/{len(payments)})\n"
             f"━━━━━━━━━━━━━━━━\n"
             f"👤 {name}\n"
-            f"💰 <b>{p.amount:,.2f}₽</b> за {p.month:02d}/{p.year}\n"
+            f"💰 <b>{p.amount:,.2f}₽</b> {date_str}\n"
         )
         if p.comment:
             text += f"💬 {p.comment}\n"
@@ -493,11 +635,17 @@ async def confirm_payment(callback: CallbackQuery) -> None:
                     details={"user_id": payment.user_id, "amount": str(payment.amount)},
                 ))
 
-            await safe_edit(
-                callback,
-                f"✅ Платёж {payment_id} подтверждён!",
-                reply_markup=back_keyboard(),
-            )
+            try:
+                await safe_edit(
+                    callback,
+                    f"✅ Платёж {payment_id} подтверждён!",
+                    reply_markup=back_keyboard(),
+                )
+            except Exception:
+                await callback.message.answer(
+                    f"✅ Платёж {payment_id} подтверждён!",
+                    reply_markup=back_keyboard(),
+                )
 
             # Notify user
             try:
@@ -547,11 +695,17 @@ async def reject_payment(callback: CallbackQuery) -> None:
             payment.confirmed_at = datetime.utcnow()
             await pay_repo.update(payment)
 
-            await safe_edit(
-                callback,
-                f"❌ Платёж {payment_id} отклонён.",
-                reply_markup=back_keyboard(),
-            )
+            try:
+                await safe_edit(
+                    callback,
+                    f"❌ Платёж {payment_id} отклонён.",
+                    reply_markup=back_keyboard(),
+                )
+            except Exception:
+                await callback.message.answer(
+                    f"❌ Платёж {payment_id} отклонён.",
+                    reply_markup=back_keyboard(),
+                )
             logger.info("reject_payment: payment %s marked rejected", payment_id)
 
             # Уведомить пользователя об отклонении
@@ -731,7 +885,9 @@ async def show_stats(callback: CallbackQuery) -> None:
         total_pending_fees = await fee_repo.total_pending_amount()
         total_active_fines = await fine_repo.total_active_amount()
         total_debt = total_pending_fees + total_active_fines
-        balance = total_revenue - total_expenses
+        settings_repo = ClubSettingsRepository(session)
+        adjustment = await settings_repo.get_treasury_adjustment()
+        balance = total_revenue - total_expenses + adjustment
         debtors = await user_repo.count_debtors()
         active = await user_repo.count_active()
 
@@ -739,6 +895,7 @@ async def show_stats(callback: CallbackQuery) -> None:
             f"{balance:,.2f}₽",
             f"{total_revenue:,.2f}₽",
             f"{total_expenses:,.2f}₽",
+            f"{adjustment:,.2f}₽",
             f"{total_debt:,.2f}₽",
             debtors,
             active,

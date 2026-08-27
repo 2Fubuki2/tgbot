@@ -24,6 +24,7 @@ class FeeRepository(IFeeRepository):
             month=model.__dict__.get('month'),
             year=model.__dict__.get('year'),
             status=FeeStatus(model.__dict__.get('status')) if model.__dict__.get('status') is not None else FeeStatus.PENDING,
+            comment=model.__dict__.get('comment'),
             assessed_at=model.__dict__.get('assessed_at'),
             paid_at=model.__dict__.get('paid_at'),
         )
@@ -37,6 +38,7 @@ class FeeRepository(IFeeRepository):
             month=entity.month,
             year=entity.year,
             status=entity.status.value if entity.status else FeeStatus.PENDING.value,
+            comment=entity.comment,
             paid_at=entity.paid_at,
         )
 
@@ -71,6 +73,7 @@ class FeeRepository(IFeeRepository):
 
         model.amount = fee.amount
         model.status = fee.status.value if fee.status else model.status
+        model.comment = fee.comment
         model.paid_at = fee.paid_at
         await self.session.flush()
         return self._to_domain(model)

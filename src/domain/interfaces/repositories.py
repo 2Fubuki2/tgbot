@@ -168,3 +168,9 @@ class IClubSettingsRepository(ABC):
 
     @abstractmethod
     async def get_payment_details(self) -> str: ...
+
+    @abstractmethod
+    async def get_treasury_adjustment(self) -> Decimal: ...
+
+    @abstractmethod
+    async def set_treasury_adjustment(self, value: Decimal) -> Decimal: ...

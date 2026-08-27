@@ -73,7 +73,6 @@ def club_budget_keyboard() -> InlineKeyboardMarkup:
         [("💰 Начислить взносы", "treasurer_assess_fees")],
         [("⏳ Подтвердить платежи", "treasurer_pending")],
         [("📋 Все участники", "treasurer_members")],
-        [("🔍 Поиск участников", "treasurer_user_search")],
         [("⚠️ Штрафы", "treasurer_fines")],
         [("💸 Расходы клуба", "treasurer_expenses")],
         [("📬 Напоминания", "treasurer_remind")],
@@ -88,6 +87,7 @@ def admin_management_keyboard() -> InlineKeyboardMarkup:
     return build_kb([
         [("👥 Пользователи", "admin_users")],
         [("⚙️ Настройки", "admin_settings")],
+        [("💰 Коррекция казны", "admin_treasury_adjust")],
         [("📋 Журнал", "admin_log")],
         [("📄 Экспорт", "admin_export")],
         [BACK_BTN],
@@ -106,6 +106,14 @@ def confirm_cancel_keyboard(confirm_cb: str, cancel_cb: str = "cancel_action") -
     return build_kb([
         [("✅ Подтвердить", confirm_cb)],
         [("❌ Отменить", cancel_cb)],
+    ])
+
+
+def assess_fees_keyboard() -> InlineKeyboardMarkup:
+    """Клавиатура выбора типа начисления взносов."""
+    return build_kb([
+        [("📅 Текущий месяц", "assess_current")],
+        [("✏️ Вручную", "assess_manual")],
     ])
 
 
@@ -138,6 +146,7 @@ def user_actions_keyboard(user_id: int, status: str | None = None) -> InlineKeyb
         [("👑 Назначить админом", f"admin_role_admin:{user_id}")],
         [("🔑 Назначить казначеем", f"admin_role_treasurer:{user_id}")],
         [("👤 Назначить участником", f"admin_role_member:{user_id}")],
+        [("✏️ Изменить никнейм", f"admin_rename:{user_id}")],
         [("📦 Архивировать", f"admin_archive:{user_id}")],
         [("🗑 Удалить", f"admin_delete_confirm:{user_id}")],
         [("🔙 Назад к списку", "admin_user_list")],
@@ -184,6 +193,7 @@ def payment_action_keyboard(payment_id: int) -> InlineKeyboardMarkup:
     return build_kb([
         [("✅ Подтвердить", f"payment_confirm:{payment_id}")],
         [("❌ Отклонить", f"payment_reject:{payment_id}")],
+        [("📋 Мой бюджет", "my_budget")],
     ])
 
 

@@ -103,6 +103,7 @@ def stats_text(
     balance: str,
     revenue: str,
     expenses: str,
+    adjustment: str,
     debt: str,
     debtors_count: int,
     active_members: int,
@@ -114,6 +115,7 @@ def stats_text(
         f"💰 Баланс казны: <b>{balance}</b>\n"
         f"📈 Поступления: <b>{revenue}</b>\n"
         f"📉 Расходы: <b>{expenses}</b>\n"
+        f"🔧 Коррекция казны: <b>{adjustment}</b>\n"
         f"━━━━━━━━━━━━━━━━\n"
         f"📌 Общий долг: <b>{debt}</b>\n"
         f"👥 Должников: <b>{debtors_count}</b>\n"

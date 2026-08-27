@@ -142,6 +142,7 @@ async def _fine_finalize(callback, state: FSMContext) -> None:
             f"💰 Сумма: <b>{data['fine_amount']:,.2f}₽</b>\n"
             f"📌 Причина: {data['fine_reason']}",
         )
+        await callback.answer()
 
         try:
             if user:

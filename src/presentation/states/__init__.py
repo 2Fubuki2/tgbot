@@ -55,3 +55,23 @@ class AddUserStates(StatesGroup):
 class SearchUserStates(StatesGroup):
     """FSM для поиска пользователя (админ)."""
     waiting_query = State()
+
+
+# ─── Начисление взносов (казначей/админ) ──────────
+class AssessFeesStates(StatesGroup):
+    """FSM для ручного начисления взносов."""
+    waiting_period = State()  # month.year
+    waiting_amount = State()
+    waiting_comment = State()
+
+
+# ─── Корректировка баланса казны (админ) ──────────
+class TreasuryAdjustStates(StatesGroup):
+    """FSM для корректировки баланса казны."""
+    waiting_adjustment = State()
+
+
+# ─── Изменение никнейма (админ) ─────────────────
+class RenameUserStates(StatesGroup):
+    """FSM для изменения никнейма участника."""
+    waiting_new_name = State()

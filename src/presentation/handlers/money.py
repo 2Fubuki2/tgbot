@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 import re
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
@@ -224,7 +224,7 @@ async def _pay_ask_comment(source, state: FSMContext) -> None:
 @router.callback_query(F.data == "pay_skip_comment")
 async def pay_skip_comment(callback: CallbackQuery, state: FSMContext) -> None:
     await state.update_data(pay_comment=None)
-    await _pay_finalize(callback, state)
+    await _pay_finalize(callback.from_user.id, callback.bot, state)
 
 
 @router.message(PaymentStates.waiting_comment)
@@ -236,10 +236,18 @@ async def member_pay_comment(message: Message, state: FSMContext) -> None:
     else:
         await state.update_data(pay_comment=message.text.strip())
 
-    await _pay_finalize(message.from_user.id, message, state)
+    # In aiogram 3.x, get bot from message via message.bot (works in message handlers)
+    await _pay_finalize(message.from_user.id, message.bot, state)
 
 
-async def _pay_finalize(user_id, message, state: FSMContext) -> None:
+async def _pay_finalize(user_id: int, bot, state: FSMContext) -> None:
+    """Finalize payment creation and notify treasurers/admins.
+
+    Args:
+        user_id: Telegram ID of the payer
+        bot: Bot instance (from callback.bot or message.bot)
+        state: FSM state with payment data
+    """
     data = await state.get_data()
 
     async for session in get_session():
@@ -254,7 +262,7 @@ async def _pay_finalize(user_id, message, state: FSMContext) -> None:
             user = await user_repo.get_by_telegram_id(user_id)
             payer_name = user.full_name if user else "Участник"
         if not user:
-            await message.answer("❌ Ошибка: пользователь не найден")
+            await bot.send_message(user_id, "❌ Ошибка: пользователь не найден")
             await state.clear()
             return
 
@@ -273,31 +281,39 @@ async def _pay_finalize(user_id, message, state: FSMContext) -> None:
         )
         created = await pay_repo.create(payment)
 
+        _MONTHS_RU = ["января","февраля","марта","апреля","мая","июня",
+                       "июля","августа","сентября","октября","ноября","декабря"]
+        _fmt = date(data["pay_year"], data["pay_month"], 1)
+        pay_date_str = f"{_fmt.day} {_MONTHS_RU[_fmt.month - 1]} {_fmt.year} года"
+
         notify_text = (
             f"📤 <b>Новый платёж</b>\n"
             f"👤 {payer_name}\n"
             f"💰 Сумма: <b>{data['pay_amount']:,.2f}₽</b>\n"
-            f"📅 За: {data['pay_month']:02d}/{data['pay_year']}\n"
+            f"📅 За: {pay_date_str}\n"
         )
         if data.get("pay_comment"):
             notify_text += f"💬 {data['pay_comment']}\n"
         notify_text += f"\n🆔 Платёж #{created.id}"
 
-        bot = message.bot
+        kb = payment_action_keyboard(int(created.id) if created and created.id is not None else 0)
+
         for t in treasurers + admins:
             try:
-                kb = payment_action_keyboard(int(created.id) if created and created.id is not None else 0)
-                msg = await bot.send_message(t.telegram_id, notify_text)
+                # Send photo with caption and keyboard if receipt exists
                 if data.get("pay_receipt"):
-                    try:
-                        await bot.send_photo(t.telegram_id, data["pay_receipt"], caption=f"Чек к платежу #{created.id}")
-                    except Exception:
-                        logger.exception("Failed to send receipt photo for payment #%s", created.id)
-                await bot.edit_message_reply_markup(t.telegram_id, msg.message_id, reply_markup=kb)
+                    await bot.send_photo(
+                        t.telegram_id,
+                        data["pay_receipt"],
+                        caption=notify_text,
+                        reply_markup=kb,
+                    )
+                else:
+                    await bot.send_message(t.telegram_id, notify_text, reply_markup=kb)
             except Exception:
                 logger.exception("Failed to notify treasurer/admin about payment #%s", created.id)
 
-        await message.answer("✅ Платёж отправлен на подтверждение!\nОжидайте, пока казначей его подтвердит.")
+        await bot.send_message(user_id, "✅ Платёж отправлен на подтверждение!\nОжидайте, пока казначей его подтвердит.")
     await state.clear()
 
 

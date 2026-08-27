@@ -33,11 +33,12 @@ class ClubSettingsRepository(IClubSettingsRepository):
             "monthly_fee": model.monthly_fee,
             "payment_details": model.payment_details,
             "last_fee_assessment": model.last_fee_assessment,
+            "treasury_adjustment": model.treasury_adjustment,
         }
 
     async def update(self, **kwargs) -> dict:
         model = await self._ensure_row()
-        allowed = {"club_name", "monthly_fee", "payment_details", "last_fee_assessment"}
+        allowed = {"club_name", "monthly_fee", "payment_details", "last_fee_assessment", "treasury_adjustment"}
         for key, value in kwargs.items():
             if key in allowed:
                 setattr(model, key, value)
@@ -51,3 +52,13 @@ class ClubSettingsRepository(IClubSettingsRepository):
     async def get_payment_details(self) -> str:
         model = await self._ensure_row()
         return model.payment_details
+
+    async def get_treasury_adjustment(self) -> Decimal:
+        model = await self._ensure_row()
+        return model.treasury_adjustment
+
+    async def set_treasury_adjustment(self, value: Decimal) -> Decimal:
+        model = await self._ensure_row()
+        model.treasury_adjustment = value
+        await self.session.flush()
+        return value

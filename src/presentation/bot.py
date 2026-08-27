@@ -1,5 +1,7 @@
 """Bot initialization — assembles dispatcher with all routers."""
 
+import importlib
+
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
@@ -16,8 +18,8 @@ from src.presentation.handlers import (
 
 # Import history/member handlers if they exist
 try:
-    from src.presentation.handlers import member
-except ImportError:
+    member = importlib.import_module("src.presentation.handlers.member")
+except ModuleNotFoundError:
     member = None
 
 

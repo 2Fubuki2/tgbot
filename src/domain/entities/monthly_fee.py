@@ -13,5 +13,6 @@ class MonthlyFee:
     month: int = 0
     year: int = 0
     status: FeeStatus = FeeStatus.PENDING
+    comment: str | None = None
     assessed_at: datetime | None = None
     paid_at: datetime | None = None
