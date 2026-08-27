@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from aiogram import Router, F
 from aiogram.filters import Command, CommandStart
+from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 from sqlalchemy.ext.asyncio import AsyncSession
 import asyncio
@@ -231,8 +232,51 @@ async def callback_cancel_action(callback: CallbackQuery, state: FSMContext) -> 
 
 @router.callback_query(F.data == "back")
 async def callback_back(callback: CallbackQuery) -> None:
-    """Generic back — go to main menu (будет обработан middleware)."""
-    await callback_main_menu(callback)
+    """Generic back — navigate to previous screen or main menu."""
+    from src.presentation.middleware.navigation import pop_nav
+    from src.presentation.handlers.admin import (
+        admin_treasury, admin_users, admin_user_list, admin_settings,
+        admin_stats, admin_log, admin_export, expense_menu, expense_list,
+    )
+    from src.presentation.handlers.treasurer import (
+        list_pending_payments, list_members, show_stats, send_reminders,
+        member_account, member_payments, member_fines, member_details,
+    )
+    from src.presentation.handlers.fines import treasurer_fines
+
+    previous = pop_nav(callback.from_user.id)
+
+    # Map callback_data to handler functions
+    handlers = {
+        "main_menu": callback_main_menu,
+        "my_budget": callback_my_budget,
+        "club_budget": callback_club_budget,
+        "admin_management": callback_admin_management,
+        "admin_treasury": admin_treasury,
+        "admin_users": admin_users,
+        "admin_user_list": admin_user_list,
+        "admin_settings": admin_settings,
+        "admin_stats": admin_stats,
+        "admin_log": admin_log,
+        "admin_export": admin_export,
+        "treasurer_expenses": expense_menu,
+        "expense_list": expense_list,
+        "treasurer_fines": treasurer_fines,
+        "treasurer_pending": list_pending_payments,
+        "treasurer_members": list_members,
+        "treasurer_stats": show_stats,
+        "treasurer_remind": send_reminders,
+        "member_account": member_account,
+        "member_payments": member_payments,
+        "member_fines": member_fines,
+        "member_details": member_details,
+    }
+
+    handler = handlers.get(previous)
+    if handler:
+        await handler(callback)
+    else:
+        await callback_main_menu(callback)
 
 
 @router.message(Command("stop_bot"))

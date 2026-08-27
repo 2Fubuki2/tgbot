@@ -4,8 +4,6 @@ import logging
 import re
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
-from typing import cast
-
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
@@ -45,26 +43,6 @@ MONTH_NAMES = {
     "ноябрь": 11, "november": 11, "nov": 11,
     "декабрь": 12, "december": 12, "dec": 12,
 }
-
-
-async def _require_treasurer_or_admin(callback: CallbackQuery) -> bool:
-    is_allowed = False
-    async for session in get_session():
-        repo = UserRepository(session)
-        user = await repo.get_by_telegram_id(callback.from_user.id)
-        if user and (user.role == UserRole.TREASURER or user.role == UserRole.ADMIN):
-            is_allowed = True
-    if not is_allowed:
-        await callback.answer("⛔ Нет доступа", show_alert=True)
-    return is_allowed
-
-
-async def safe_edit(callback: CallbackQuery, *args, **kwargs) -> None:
-    if callback.message is None:
-        await callback.answer()
-        return
-    msg = cast(Message, callback.message)
-    await msg.edit_text(*args, **kwargs)
 
 
 def _parse_payment_amount(text: str) -> Decimal | None:
@@ -123,15 +101,6 @@ async def member_pay_start(callback: CallbackQuery, state: FSMContext) -> None:
         reply_markup=payment_type_keyboard(),
     )
     await callback.answer()
-
-
-@router.callback_query(F.data == "cancel_action")
-async def cancel_payment(callback: CallbackQuery, state: FSMContext) -> None:
-    """Отмена процесса оплаты."""
-    await state.clear()
-    await callback.answer("❌ Оплата отменена")
-    from src.presentation.handlers.common import callback_main_menu
-    await callback_main_menu(callback)
 
 
 @router.callback_query(F.data.startswith("pay_type:"))
@@ -314,16 +283,17 @@ async def _pay_finalize(user_id, message, state: FSMContext) -> None:
             notify_text += f"💬 {data['pay_comment']}\n"
         notify_text += f"\n🆔 Платёж #{created.id}"
 
+        bot = message.bot
         for t in treasurers + admins:
             try:
                 kb = payment_action_keyboard(int(created.id) if created and created.id is not None else 0)
-                msg = await callback.bot.send_message(t.telegram_id, notify_text)
+                msg = await bot.send_message(t.telegram_id, notify_text)
                 if data.get("pay_receipt"):
                     try:
-                        await callback.bot.send_photo(t.telegram_id, data["pay_receipt"], caption=f"Чек к платежу #{created.id}")
+                        await bot.send_photo(t.telegram_id, data["pay_receipt"], caption=f"Чек к платежу #{created.id}")
                     except Exception:
                         logger.exception("Failed to send receipt photo for payment #%s", created.id)
-                await callback.bot.edit_message_reply_markup(t.telegram_id, msg.message_id, reply_markup=kb)
+                await bot.edit_message_reply_markup(t.telegram_id, msg.message_id, reply_markup=kb)
             except Exception:
                 logger.exception("Failed to notify treasurer/admin about payment #%s", created.id)
 
@@ -333,7 +303,7 @@ async def _pay_finalize(user_id, message, state: FSMContext) -> None:
 
 @router.callback_query(F.data.startswith("treasurer_pay:"))
 async def treasurer_manual_pay(callback: CallbackQuery, state: FSMContext) -> None:
-    if not await _require_treasurer_or_admin(callback):
+    if not await require_treasurer_or_admin(callback):
         return
     user_id = int((callback.data or "").split(":", 1)[1])
     await state.update_data(pay_target_user_id=user_id, pay_kind="fee")

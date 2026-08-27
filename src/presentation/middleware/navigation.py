@@ -1,9 +1,36 @@
-"""Navigation middleware для отслеживания истории экранов."""
+"""Глобальное хранилище навигации и middleware."""
 
-from typing import Any, Awaitable, Callable, Dict
-
+from typing import Any, Awaitable, Callable, Dict, List
 from aiogram import BaseMiddleware
 from aiogram.types import CallbackQuery, TelegramObject
+
+# Хранилище навигации: user_id -> список экранов
+_nav_stack: Dict[int, List[str]] = {}
+
+
+def get_nav_history(user_id: int) -> List[str]:
+    return _nav_stack.get(user_id, ["main_menu"])
+
+
+def push_nav(user_id: int, screen: str) -> None:
+    if user_id not in _nav_stack:
+        _nav_stack[user_id] = ["main_menu"]
+    history = _nav_stack[user_id]
+    if history and history[-1] == screen:
+        return
+    history.append(screen)
+    if len(history) > 10:
+        _nav_stack[user_id] = history[-10:]
+
+
+def pop_nav(user_id: int) -> str:
+    history = _nav_stack.get(user_id, ["main_menu"])
+    if len(history) > 1:
+        history.pop()
+        previous = history[-1]
+    else:
+        previous = "main_menu"
+    return previous
 
 
 class NavigationMiddleware(BaseMiddleware):
@@ -15,44 +42,17 @@ class NavigationMiddleware(BaseMiddleware):
         event: TelegramObject,
         data: Dict[str, Any],
     ) -> Any:
-        """Обработка события и сохранение истории навигации."""
-        if isinstance(event, CallbackQuery):
-            callback_data = event.data or ""
-            user_id = event.from_user.id
-            state = data.get("state")
+        if not isinstance(event, CallbackQuery):
+            return await handler(event, data)
 
-            # Получаем текущую историю навигации
-            if state:
-                state_data = await state.get_data()
-                nav_history = state_data.get("nav_history", [])
+        callback_data = event.data or ""
+        user_id = event.from_user.id
 
-                # Если нажата кнопка "Назад"
-                if callback_data == "back":
-                    if len(nav_history) > 1:
-                        # Убираем текущий экран
-                        nav_history.pop()
-                        # Получаем предыдущий экран
-                        previous_screen = nav_history[-1]
-                        await state.update_data(nav_history=nav_history)
-                        # Перенаправляем на предыдущий экран
-                        event.data = previous_screen
-                    else:
-                        # Если истории нет, идем в главное меню
-                        event.data = "main_menu"
-                        await state.update_data(nav_history=["main_menu"])
-
-                # Если это главное меню, очищаем историю
-                elif callback_data == "main_menu":
-                    await state.update_data(nav_history=["main_menu"])
-
-                # Для остальных экранов добавляем в историю
-                elif not callback_data.startswith(("back", "confirm_", "cancel_", "skip_")):
-                    # Не добавляем служебные callback (подтверждения, отмены)
-                    if callback_data not in nav_history[-1:]:
-                        nav_history.append(callback_data)
-                        # Ограничиваем историю 10 экранами
-                        if len(nav_history) > 10:
-                            nav_history = nav_history[-10:]
-                        await state.update_data(nav_history=nav_history)
+        if callback_data == "main_menu":
+            _nav_stack[user_id] = ["main_menu"]
+        elif callback_data == "back":
+            pass  # обработается в хендлере
+        elif not callback_data.startswith(("confirm_", "cancel_", "skip_", "pay_", "fine_", "back:")):
+            push_nav(user_id, callback_data)
 
         return await handler(event, data)
