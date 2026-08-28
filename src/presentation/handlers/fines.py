@@ -16,7 +16,8 @@ from src.infrastructure.database.session import get_session
 from src.infrastructure.repositories.audit_repository import AuditLogRepository
 from src.infrastructure.repositories.fine_repository import FineRepository
 from src.infrastructure.repositories.user_repository import UserRepository
-from src.presentation.keyboards.common import back_keyboard, build_kb, confirm_cancel_keyboard
+from src.presentation.keyboards.common import back_keyboard, build_kb, confirm_cancel_keyboard, main_menu_keyboard
+from src.presentation.handlers.common import callback_main_menu
 from src.presentation.utils import safe_edit, require_role
 from src.presentation.states import FineStates
 
@@ -47,7 +48,7 @@ async def fine_issuer_amount(message: Message, state: FSMContext) -> None:
     # Проверка на отмену
     if message.text.strip().lower() in ("/cancel", "отмена"):
         await state.clear()
-        await message.answer("❌ Начисление штрафа отменено")
+        await message.answer("❌ Начисление штрафа отменено", reply_markup=main_menu_keyboard(UserRole.TREASURER))
         return
 
     try:
@@ -64,6 +65,10 @@ async def fine_issuer_amount(message: Message, state: FSMContext) -> None:
 @router.message(FineStates.waiting_reason)
 async def fine_issue_reason(message: Message, state: FSMContext) -> None:
     if message.text is None:
+        return
+    if message.text.strip().lower() in ("/cancel", "отмена"):
+        await state.clear()
+        await message.answer("❌ Начисление штрафа отменено", reply_markup=main_menu_keyboard(UserRole.TREASURER))
         return
     await state.update_data(fine_reason=message.text.strip())
     await state.set_state(FineStates.waiting_comment)
@@ -141,6 +146,7 @@ async def _fine_finalize(callback, state: FSMContext) -> None:
             f"👤 {user.full_name if user else '?'}\n"
             f"💰 Сумма: <b>{data['fine_amount']:,.2f}₽</b>\n"
             f"📌 Причина: {data['fine_reason']}",
+            reply_markup=main_menu_keyboard(UserRole.TREASURER),
         )
         await callback.answer()
 
@@ -193,7 +199,7 @@ async def fine_cancel(callback: CallbackQuery) -> None:
         await safe_edit(
             callback,
             f"✅ Штраф #{fine.id} отменён.",
-            reply_markup=back_keyboard(),
+            reply_markup=main_menu_keyboard(UserRole.TREASURER),
         )
     await callback.answer()
 
@@ -203,17 +209,22 @@ async def treasurer_fines(callback: CallbackQuery) -> None:
     if not await require_role(callback, UserRole.TREASURER):
         return
     async for session in get_session():
-        repo = FineRepository(session)
-        fines = await repo.list_active()
+        fine_repo = FineRepository(session)
+        user_repo = UserRepository(session)
+        fines = await fine_repo.list_active()
         if not fines:
-            await safe_edit(callback, "✅ Активных штрафов нет.", reply_markup=back_keyboard())
+            await safe_edit(callback, "✅ Активных штрафов нет.", reply_markup=main_menu_keyboard(UserRole.TREASURER))
             await callback.answer()
             return
 
         lines = ["⚠️ <b>Активные штрафы</b>:\n"]
         keyboard_rows = []
         for f in fines[:20]:
-            lines.append(f"ID#{f.id} — {f.amount:,.2f}₽ — {f.reason}")
+            user = await user_repo.get_by_id(f.user_id)
+            user_name = f"{user.full_name}" if user else f"ID{f.user_id}"
+            if user and user.username:
+                user_name += f" @{user.username}"
+            lines.append(f"{user_name} — {f.amount:,.2f}₽ — {f.reason}")
             keyboard_rows.append([("💳 Оплатить", f"pay_fine:{f.id}"), ("❌ Отменить", f"fine_cancel:{f.id}")])
         await safe_edit(callback, "\n".join(lines), reply_markup=build_kb(keyboard_rows + [[("🔙 Назад", "back")]]))
     await callback.answer()

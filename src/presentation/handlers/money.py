@@ -20,9 +20,11 @@ from src.presentation.keyboards.common import (
     back_keyboard,
     build_kb,
     confirm_cancel_keyboard,
+    main_menu_keyboard,
     payment_action_keyboard,
     payment_type_keyboard,
 )
+from src.presentation.handlers.common import callback_main_menu
 from src.presentation.states import PaymentStates
 from src.presentation.utils import safe_edit, require_role, require_treasurer_or_admin
 
@@ -127,7 +129,7 @@ async def member_pay_amount(message: Message, state: FSMContext) -> None:
     # Проверка на отмену
     if message.text.strip().lower() in ("/cancel", "отмена"):
         await state.clear()
-        await message.answer("❌ Оплата отменена")
+        await message.answer("❌ Оплата отменена", reply_markup=main_menu_keyboard(UserRole.MEMBER))
         return
 
     text = message.text.strip()
@@ -269,13 +271,21 @@ async def _pay_finalize(user_id: int, bot, state: FSMContext) -> None:
         treasurers = await user_repo.list_by_role(UserRole.TREASURER)
         admins = await user_repo.list_by_role(UserRole.ADMIN)
 
+        fine_id = data.get("pay_fine_id")
+        payment_type = data.get("pay_kind", "fee")
+        comment = data.get("pay_comment")
+        if fine_id and not comment:
+            comment = f"Оплата штрафа #{fine_id}"
+        elif fine_id and comment:
+            comment = f"{comment} (штраф #{fine_id})"
+
         payment = Payment(
             user_id=int(user.id) if user and user.id is not None else 0,
             amount=data["pay_amount"],
             month=data["pay_month"],
             year=data["pay_year"],
-            payment_type=data.get("pay_kind", "fee"),
-            comment=data.get("pay_comment"),
+            payment_type=payment_type,
+            comment=comment,
             receipt_photo_id=data.get("pay_receipt"),
             status=PaymentStatus.PENDING,
         )
@@ -283,8 +293,8 @@ async def _pay_finalize(user_id: int, bot, state: FSMContext) -> None:
 
         _MONTHS_RU = ["января","февраля","марта","апреля","мая","июня",
                        "июля","августа","сентября","октября","ноября","декабря"]
-        _fmt = date(data["pay_year"], data["pay_month"], 1)
-        pay_date_str = f"{_fmt.day} {_MONTHS_RU[_fmt.month - 1]} {_fmt.year} года"
+        pay_dt = datetime.utcnow().date()
+        pay_date_str = f"{pay_dt.day} {_MONTHS_RU[pay_dt.month - 1]} {pay_dt.year} года"
 
         notify_text = (
             f"📤 <b>Новый платёж</b>\n"
@@ -292,8 +302,10 @@ async def _pay_finalize(user_id: int, bot, state: FSMContext) -> None:
             f"💰 Сумма: <b>{data['pay_amount']:,.2f}₽</b>\n"
             f"📅 За: {pay_date_str}\n"
         )
-        if data.get("pay_comment"):
-            notify_text += f"💬 {data['pay_comment']}\n"
+        if payment_type == "fine":
+            notify_text += f"📌 <b>Тип: Оплата штрафа</b>\n"
+        if comment:
+            notify_text += f"💬 {comment}\n"
         notify_text += f"\n🆔 Платёж #{created.id}"
 
         kb = payment_action_keyboard(int(created.id) if created and created.id is not None else 0)
@@ -315,6 +327,15 @@ async def _pay_finalize(user_id: int, bot, state: FSMContext) -> None:
 
         await bot.send_message(user_id, "✅ Платёж отправлен на подтверждение!\nОжидайте, пока казначей его подтвердит.")
     await state.clear()
+    # Return to main menu after payment flow completes
+    try:
+        async for sess in get_session():
+            from src.infrastructure.repositories.user_repository import UserRepository
+            user = await UserRepository(sess).get_by_telegram_id(user_id)
+        kb = main_menu_keyboard(user.role if user else UserRole.MEMBER)
+        await bot.send_message(user_id, "🏠 Главное меню", reply_markup=kb)
+    except Exception:
+        pass
 
 
 @router.callback_query(F.data.startswith("treasurer_pay:"))
@@ -333,11 +354,10 @@ async def treasurer_manual_pay(callback: CallbackQuery, state: FSMContext) -> No
 
 
 @router.callback_query(F.data.startswith("pay_fine:"))
-async def member_pay_fine(callback: CallbackQuery) -> None:
+async def member_pay_fine(callback: CallbackQuery, state: FSMContext) -> None:
     fine_id = int((callback.data or "").split(":", 1)[1])
     async for session in get_session():
         fine_repo = FineRepository(session)
-        pay_repo = PaymentRepository(session)
         user_repo = UserRepository(session)
         fine = await fine_repo.get_by_id(fine_id)
         if not fine or fine.status != FineStatus.ACTIVE:
@@ -354,41 +374,21 @@ async def member_pay_fine(callback: CallbackQuery) -> None:
             await callback.answer("❌ Пользователь не найден.", show_alert=True)
             return
 
-        payment = Payment(
-            user_id=fine.user_id,
-            amount=amount,
-            month=datetime.utcnow().month,
-            year=datetime.utcnow().year,
-            payment_type="fine",
-            comment=f"Оплата штрафа #{fine.id}",
-            status=PaymentStatus.PENDING,
+        # Save fine_id and payment data to state, then redirect to receipt/comment flow
+        await state.update_data(
+            pay_kind="fine",
+            pay_amount=amount,
+            pay_month=datetime.utcnow().month,
+            pay_year=datetime.utcnow().year,
+            pay_fine_id=fine.id,
         )
-        created = await pay_repo.create(payment)
+        await state.set_state(PaymentStates.waiting_receipt)
         await safe_edit(
             callback,
-            f"✅ Запрос на оплату штрафа #{fine.id} отправлен на подтверждение.\nСумма: <b>{amount:,.2f}₽</b>",
-            reply_markup=back_keyboard(),
+            f"📤 <b>Оплата штрафа #{fine.id}</b>\n"
+            f"Сумма к оплате: <b>{amount:,.2f}₽</b>\n\n"
+            f"📸 Отправьте <b>фото чека</b> (или подтверждения перевода).\n"
+            f"Если фото нет — отправьте /skip:",
+            reply_markup=confirm_cancel_keyboard("pay_skip_receipt", "back"),
         )
-
-        treasurers = await user_repo.list_by_role(UserRole.TREASURER)
-        admins = await user_repo.list_by_role(UserRole.ADMIN)
-        bot = callback.bot
-        if bot is None:
-            await callback.answer("❌ Не удалось отправить уведомление о платеже.", show_alert=True)
-            return
-
-        for t in treasurers + admins:
-            try:
-                msg = await bot.send_message(
-                    t.telegram_id,
-                    f"📤 <b>Новый платёж по штрафу</b>\n👤 {payer.full_name}\n💰 Сумма: <b>{amount:,.2f}₽</b>\n📌 Штраф #{fine.id}",
-                )
-                await bot.edit_message_reply_markup(
-                    t.telegram_id,
-                    msg.message_id,
-                    reply_markup=payment_action_keyboard(int(created.id) if created and created.id is not None else 0),
-                )
-            except Exception:
-                logger.exception("Failed to notify about fine payment #%s", created.id)
-
     await callback.answer()

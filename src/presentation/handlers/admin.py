@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import logging
 from datetime import date
 from decimal import Decimal, InvalidOperation
 from html import escape
@@ -19,6 +20,7 @@ from src.domain.value_objects.user_status import UserStatus
 from src.infrastructure.database.session import get_session
 from src.infrastructure.repositories.audit_repository import AuditLogRepository
 from src.infrastructure.database.models.audit_log import AuditLogModel
+from src.presentation.export_pdf import generate_export_pdf
 from sqlalchemy import select
 from src.infrastructure.repositories.expense_repository import ExpenseRepository
 from src.infrastructure.repositories.fine_repository import FineRepository
@@ -35,6 +37,7 @@ from src.presentation.keyboards.common import (
     main_menu_keyboard,
     user_actions_keyboard,
 )
+from src.presentation.handlers.common import callback_main_menu
 from src.presentation.texts import (
     ACCESS_DENIED,
 )
@@ -49,6 +52,8 @@ from src.presentation.states import (
 )
 
 router = Router()
+logger = logging.getLogger(__name__)
+
 
 
 # ─── Админ: казна (доступ к функциям казначея) ────
@@ -1084,9 +1089,58 @@ async def admin_export(callback: CallbackQuery) -> None:
 
         await callback.message.send_document(
             BufferedInputFile(buffer.read(), filename="treasury_export.json"),
-            caption="📄 Экспорт данных клуба",
+            caption="📄 Экспорт данных клуба (JSON)",
             reply_markup=back_keyboard(),
         )
+
+        # Also generate CSV for spreadsheet use
+        lines_csv = ["id,telegram_id,username,full_name,role,status,balance_credit"]
+        for u in users:
+            lines_csv.append(
+                f'{u.id},{u.telegram_id},"{u.username or ""}","{u.full_name}",{u.role.value},{u.status.value},{u.balance_credit}'
+            )
+        lines_csv.append("")
+        lines_csv.append("payments:")
+        lines_csv.append("id,user_id,amount,month,year,status,comment,confirmed_at")
+        for p in payments:
+            lines_csv.append(
+                f'{p.id},{p.user_id},{p.amount},{p.month},{p.year},{p.status.value},"{p.comment or ""}","{p.confirmed_at.isoformat() if p.confirmed_at else ""}"'
+            )
+        lines_csv.append("")
+        lines_csv.append("fines:")
+        lines_csv.append("id,user_id,amount,reason,status")
+        for f in fines:
+            lines_csv.append(f'{f.id},{f.user_id},{f.amount},"{f.reason}","{f.status.value}"')
+        lines_csv.append("")
+        lines_csv.append("expenses:")
+        lines_csv.append("id,amount,category,comment,expense_date")
+        for e in expenses:
+            lines_csv.append(f'{e.id},{e.amount},"{e.category.value}","{e.comment or ""}",{e.expense_date.isoformat() if e.expense_date else ""}')
+
+        csv_payload = "
+".join(lines_csv).encode("utf-8")
+        await callback.message.send_document(
+            BufferedInputFile(io.BytesIO(csv_payload).getvalue(), filename="treasury_export.csv"),
+            caption="📊 Экспорт данных клуба (CSV для Excel)",
+            reply_markup=back_keyboard(),
+        )
+
+        # PDF report
+        try:
+            pdf_buf = generate_export_pdf(users, payments, fines, expenses)
+            await callback.message.answer_document(
+                BufferedInputFile(pdf_buf.getvalue(), filename="treasury_export.pdf"),
+                caption="📑 Экспорт данных клуба (PDF-отчёт)",
+            )
+        except Exception:
+            logger.exception("PDF export failed, continuing without it")
+
     await callback.answer()
+    # Return to main menu after export completes
+    async for session in get_session():
+        from src.infrastructure.repositories.user_repository import UserRepository
+        user = await UserRepository(session).get_by_telegram_id(callback.from_user.id)
+    kb = main_menu_keyboard(user.role if user else UserRole.MEMBER)
+    await callback.message.answer("🏠 Главное меню", reply_markup=kb)
 
 
