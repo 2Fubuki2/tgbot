@@ -967,29 +967,76 @@ async def admin_stats(callback: CallbackQuery) -> None:
 
 # ─── Админ: журнал действий ──────────────────────
 
-@router.callback_query(F.data == "admin_log")
-async def admin_log(callback: CallbackQuery) -> None:
-    if not await require_role(callback, UserRole.ADMIN):
-        return
+LOG_PER_PAGE = 10
+
+
+async def _show_admin_log_page(callback: CallbackQuery, page: int) -> None:
+    """Show paginated audit log page."""
     async for session in get_session():
         from src.infrastructure.repositories.audit_repository import AuditLogRepository
         repo = AuditLogRepository(session)
-        logs = await repo.list_all(limit=30)
+
+        logs, total = await repo.list_paginated(page=page, per_page=LOG_PER_PAGE)
+        total_pages = max(1, (total + LOG_PER_PAGE - 1) // LOG_PER_PAGE)
+
+        if page < 0:
+            page = 0
+        elif page >= total_pages:
+            page = total_pages - 1
 
         if not logs:
-            await safe_edit(callback, "📭 Журнал действий пуст.", reply_markup=back_keyboard())
+            await safe_edit(
+                callback,
+                "📭 Журнал действий пуст.",
+                reply_markup=back_keyboard(),
+            )
             return
 
-        lines = ["📋 <b>Журнал действий</b>:\n"]
+        lines = [f"📋 <b>Журнал действий</b> (стр. {page + 1}/{total_pages}, всего: {total}):\n"]
         for log in logs:
             time_str = log.created_at.strftime("%d.%m %H:%M") if log.created_at else "?"
             lines.append(f"{time_str} | {log.action} | {log.entity_type}#{log.entity_id or '?'}")
 
+        # Navigation buttons
+        nav = []
+        if page > 0:
+            nav.append(("⬅️ Назад", f"admin_log_page:{page - 1}"))
+        if page < total_pages - 1:
+            nav.append(("Вперёд ➡️", f"admin_log_page:{page + 1}"))
+
+        kb_rows = []
+        if nav:
+            kb_rows.append(nav)
+        kb_rows.append([("🔙 В меню", "back")])
+
         await safe_edit(
             callback,
+<<<<<<< HEAD
             "\n".join(lines),
             reply_markup=back_keyboard(),
+=======
+            "\n".join(lines).strip(),
+            reply_markup=build_kb(kb_rows),
+>>>>>>> 00d2ec7 (final version before deploy)
         )
+
+
+@router.callback_query(F.data == "admin_log")
+async def admin_log(callback: CallbackQuery) -> None:
+    if not await require_role(callback, UserRole.ADMIN):
+        return
+    await _show_admin_log_page(callback, 0)
+
+
+@router.callback_query(F.data.startswith("admin_log_page:"))
+async def admin_log_page(callback: CallbackQuery) -> None:
+    if not await require_role(callback, UserRole.ADMIN):
+        return
+    if not callback.data:
+        await callback.answer()
+        return
+    page = int(callback.data.split(":")[1])
+    await _show_admin_log_page(callback, page)
 
 
 # ─── Админ: экспорт ──────────────────────────────

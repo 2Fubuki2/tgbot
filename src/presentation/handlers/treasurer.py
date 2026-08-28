@@ -214,9 +214,11 @@ async def member_details(callback: CallbackQuery) -> None:
         settings_repo = ClubSettingsRepository(session)
         club_settings = await settings_repo.get()
 
+        # Use or-fallback since .get() doesn't default on None values
+        payment_details = club_settings.get("payment_details") or "Не указаны"
         text = (
             f"💳 <b>Реквизиты для оплаты</b>\n\n"
-            f"{club_settings.get('payment_details', 'Не указаны')}"
+            f"{payment_details}"
         )
         await safe_edit(callback, text, reply_markup=back_keyboard())
     await callback.answer()
@@ -374,7 +376,7 @@ async def _assess_fees_for_period(
             if is_callback:
                 await safe_edit(source, text, reply_markup=back_keyboard())
             else:
-                await source.answer(text, reply_markup=back_keyboard())
+                await source.reply(text, reply_markup=back_keyboard())
             if is_callback:
                 await source.answer()
             return
@@ -443,7 +445,7 @@ async def _assess_fees_for_period(
             await safe_edit(source, result_text, reply_markup=back_keyboard())
             await source.answer()
         else:
-            await source.answer(result_text, reply_markup=back_keyboard())
+            await source.reply(result_text, reply_markup=back_keyboard())
 
 
 # ─── Казначей: ожидающие платежи ─────────────────
@@ -492,7 +494,7 @@ async def list_pending_payments(callback: CallbackQuery) -> None:
 
 
 async def _show_pending_page(callback: CallbackQuery, page: int) -> None:
-    """Show one pending payment at a time with navigation."""
+    """Show one pending payment at a time with navigation (including receipt photo)."""
     async for session in get_session():
         pay_repo = PaymentRepository(session)
         user_repo = UserRepository(session)
@@ -518,7 +520,18 @@ async def _show_pending_page(callback: CallbackQuery, page: int) -> None:
 
         p = payments[page]
         payer = await user_repo.get_by_id(p.user_id)
-        name = payer.full_name if payer else f"ID:{p.user_id}"
+
+        # Build detailed user info: Name (@username) — Role
+        if payer:
+            role_label = {
+                "admin": "Администратор",
+                "treasurer": "Казначей",
+                "member": "Участник",
+            }.get(payer.role.value, payer.role.value)
+            user_tag = f"@{payer.username}" if payer.username else f"id{payer.telegram_id}"
+            name = f"{payer.full_name} ({user_tag}) — {role_label}"
+        else:
+            name = f"ID:{p.user_id}"
 
         date_str = p.payment_date.strftime("%d.%m.%Y") if p.payment_date else f"{p.month:02d}/{p.year}"
         text = (
@@ -532,7 +545,7 @@ async def _show_pending_page(callback: CallbackQuery, page: int) -> None:
         if p.payment_method:
             text += f"💳 {p.payment_method}\n"
 
-        # Build navigation + action buttons
+        # Build navigation + action buttons (include "Мой бюджет")
         kb_rows = [[("✅ Подтвердить", f"payment_confirm:{p.id}"),
                      ("❌ Отклонить", f"payment_reject:{p.id}")]]
         nav = []
@@ -542,12 +555,49 @@ async def _show_pending_page(callback: CallbackQuery, page: int) -> None:
             nav.append(("➡️", f"pending_page:{page + 1}"))
         if nav:
             kb_rows.append(nav)
-        kb_rows.append([("🔙 Назад", "back")])
+        kb_rows.append([("📋 Мой бюджет", "my_budget"), ("🔙 Назад", "back")])
 
-        try:
-            await safe_edit(callback, text, reply_markup=build_kb(kb_rows))
-        except Exception:
-            await callback.message.answer(text, reply_markup=build_kb(kb_rows))
+        # If receipt photo exists, send as photo. To keep the chat clean, replace
+        # the previously shown photo message instead of stacking new ones.
+        if p.receipt_photo_id:
+            current_photo_id = None
+            if callback.message and callback.message.photo:
+                current_photo_id = callback.message.photo[-1].file_id  # largest size
+
+            # Same receipt already on screen -> just update the caption
+            if current_photo_id == p.receipt_photo_id:
+                try:
+                    await callback.message.edit_caption(
+                        caption=text,
+                        reply_markup=build_kb(kb_rows),
+                    )
+                except Exception:
+                    await callback.message.answer_photo(
+                        p.receipt_photo_id,
+                        caption=text,
+                        reply_markup=build_kb(kb_rows),
+                    )
+            else:
+                # Different payment/receipt -> delete old photo message, send the correct one.
+                # The old message may be a text menu (first navigation) or another payment's photo.
+                old_msg = callback.message
+                new_msg = await old_msg.answer_photo(
+                    p.receipt_photo_id,
+                    caption=text,
+                    reply_markup=build_kb(kb_rows),
+                )
+                # Delete the stale message only if it is a photo we replaced,
+                # to avoid deleting the original "club budget" menu message.
+                if old_msg and old_msg.photo:
+                    try:
+                        await old_msg.delete()
+                    except Exception:
+                        logger.exception("Failed to delete stale pending photo message")
+        else:
+            try:
+                await safe_edit(callback, text, reply_markup=build_kb(kb_rows))
+            except Exception:
+                await callback.message.answer(text, reply_markup=build_kb(kb_rows))
 
     await callback.answer()
 

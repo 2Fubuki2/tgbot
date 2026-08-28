@@ -153,6 +153,9 @@ class IAuditLogRepository(ABC):
     async def list_all(self, limit: int = 100) -> list[AuditLog]: ...
 
     @abstractmethod
+    async def list_paginated(self, page: int = 0, per_page: int = 10) -> tuple[list[AuditLog], int]: ...
+
+    @abstractmethod
     async def list_by_user(self, user_id: int, limit: int = 50) -> list[AuditLog]: ...
 
 

@@ -15,11 +15,26 @@ async def register_or_get_user(
     session: AsyncSession,
     admin_ids: list[int],
 ) -> User | None:
-    """Register user on /start or return existing one."""
+    """Register user on /start or return existing one.
+
+    If the user already exists, their @username and display name are
+    auto-synced from Telegram, so users can update their @telegram_id
+    (nickname) without an admin's help.
+    """
     repo = UserRepository(session)
     user = await repo.get_by_telegram_id(message.from_user.id)
 
     if user:
+        # Автосинхронизация username и full_name при каждом /start
+        new_username = message.from_user.username or ""
+        new_full_name = message.from_user.full_name or "Без имени"
+        if (user.username or "") != new_username or user.full_name != new_full_name:
+            user.username = new_username or user.username
+            user.full_name = new_full_name
+            try:
+                user = await repo.update(user)
+            except ValueError:
+                pass  # нельзя обновить — оставляем как есть
         return user
 
     # New user registration

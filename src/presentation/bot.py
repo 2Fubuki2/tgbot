@@ -1,11 +1,12 @@
 """Bot initialization — assembles dispatcher with all routers."""
 
 import importlib
+import logging
 
-from aiogram import Bot, Dispatcher
+from aiogram import Bot, Dispatcher, exceptions
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
-from aiogram.types import BotCommand
+from aiogram.types import BotCommand, CallbackQuery, ErrorEvent, Message
 
 from src.config.settings import settings
 from src.presentation.handlers import (
@@ -15,6 +16,27 @@ from src.presentation.handlers import (
     money,
     treasurer,
 )
+
+logger = logging.getLogger(__name__)
+
+
+async def error_handler(event: ErrorEvent) -> None:
+    """Log unexpected exceptions during event processing."""
+    exception = event.exception
+    logger.error("Unhandled exception in handler", exc_info=exception)
+    update = event.update
+    if isinstance(update, CallbackQuery) and not update.answered:
+        try:
+            await update.answer("⚠️ Произошла ошибка, попробуйте ещё раз.", show_alert=True)
+        except exceptions.TelegramRESTRateLimit as e:
+            logger.warning("Rate limit on callback answer: %s", e)
+        except exceptions.TelegramBadRequest:
+            pass
+    elif isinstance(update, Message):
+        try:
+            await update.answer(f"⚠️ Ошибка: {exception}")
+        except exceptions.TelegramRESTRateLimit as e:
+            logger.warning("Rate limit on message answer: %s", e)
 
 # Import history/member handlers if they exist
 try:
@@ -59,6 +81,9 @@ def create_dispatcher() -> Dispatcher:
     # Store middleware globally for access from handlers
     global _bot_status_middleware
     _bot_status_middleware = bot_status_middleware
+
+    # Register error handler
+    dp.errors.register(error_handler)
 
     # Register startup handler
     dp.startup.register(on_startup)

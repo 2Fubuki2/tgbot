@@ -97,9 +97,7 @@ async def member_pay_start(callback: CallbackQuery, state: FSMContext) -> None:
     await safe_edit(
         callback,
         "📤 <b>Я оплатил</b>\n\n"
-        "Что именно оплатили?\n\n"
-        "Введите <b>сумму</b> и, при необходимости, месяц или описание.\n"
-        "Например: <b>350</b>, <b>350 за июнь</b>, <b>штраф 200</b>",
+        "Введите <b>сумму</b> оплаты:",
         reply_markup=payment_type_keyboard(),
     )
     await callback.answer()
@@ -114,8 +112,7 @@ async def member_pay_type(callback: CallbackQuery, state: FSMContext) -> None:
     await safe_edit(
         callback,
         f"📤 <b>Оплата {label}</b>\n\n"
-        "Введите <b>сумму</b> и, при необходимости, месяц или описание.\n"
-        "Например: <b>350</b>, <b>350 за июнь</b>, <b>штраф 200</b>",
+        "Введите <b>сумму</b> оплаты:",
         reply_markup=back_keyboard(),
     )
     await callback.answer()
@@ -217,7 +214,7 @@ async def _pay_ask_comment(source, state: FSMContext) -> None:
             reply_markup=confirm_cancel_keyboard("pay_skip_comment", "back"),
         )
     else:
-        await source.answer(
+        await source.reply(
             "💬 Напишите <b>комментарий</b> к платежу (или /skip):",
             reply_markup=confirm_cancel_keyboard("pay_skip_comment", "back"),
         )
@@ -296,9 +293,21 @@ async def _pay_finalize(user_id: int, bot, state: FSMContext) -> None:
         pay_dt = datetime.utcnow().date()
         pay_date_str = f"{pay_dt.day} {_MONTHS_RU[pay_dt.month - 1]} {pay_dt.year} года"
 
+        # Build detailed payer info: Name (@username) — Role
+        if user:
+            role_label = {
+                "admin": "Администратор",
+                "treasurer": "Казначей",
+                "member": "Участник",
+            }.get(user.role.value, user.role.value)
+            user_tag = f"@{user.username}" if user.username else f"id{user.telegram_id}"
+            payer_info = f"{payer_name} ({user_tag}) — {role_label}"
+        else:
+            payer_info = payer_name
+
         notify_text = (
             f"📤 <b>Новый платёж</b>\n"
-            f"👤 {payer_name}\n"
+            f"👤 {payer_info}\n"
             f"💰 Сумма: <b>{data['pay_amount']:,.2f}₽</b>\n"
             f"📅 За: {pay_date_str}\n"
         )
@@ -328,14 +337,10 @@ async def _pay_finalize(user_id: int, bot, state: FSMContext) -> None:
         await bot.send_message(user_id, "✅ Платёж отправлен на подтверждение!\nОжидайте, пока казначей его подтвердит.")
     await state.clear()
     # Return to main menu after payment flow completes
-    try:
-        async for sess in get_session():
-            from src.infrastructure.repositories.user_repository import UserRepository
-            user = await UserRepository(sess).get_by_telegram_id(user_id)
+    async for sess in get_session():
+        user = await UserRepository(sess).get_by_telegram_id(user_id)
         kb = main_menu_keyboard(user.role if user else UserRole.MEMBER)
         await bot.send_message(user_id, "🏠 Главное меню", reply_markup=kb)
-    except Exception:
-        pass
 
 
 @router.callback_query(F.data.startswith("treasurer_pay:"))

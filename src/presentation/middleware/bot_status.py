@@ -30,7 +30,7 @@ class BotStatusMiddleware(BaseMiddleware):
         # Проверяем статус бота
         if not self.bot_running:
             if isinstance(event, Message):
-                await event.answer(
+                await event.reply(
                     "⏸️ <b>Бот временно остановлен</b>\n\n"
                     "Администратор остановил бота для обслуживания.\n\n"
                     "Попробуйте позже или свяжитесь с администратором.\n\n"

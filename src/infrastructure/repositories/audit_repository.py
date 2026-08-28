@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from sqlalchemy import select
+from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.domain.entities.audit_log import AuditLog
@@ -47,6 +47,23 @@ class AuditLogRepository(IAuditLogRepository):
         stmt = select(AuditLogModel).order_by(AuditLogModel.created_at.desc()).limit(limit)
         result = await self.session.execute(stmt)
         return [self._to_domain(m) for m in result.scalars().all()]
+
+    async def list_paginated(self, page: int = 0, per_page: int = 10) -> tuple[list[AuditLog], int]:
+        """Returns (logs_page, total_count)."""
+        # Total count
+        count_stmt = select(func.count(AuditLogModel.id))
+        count_result = await self.session.execute(count_stmt)
+        total = count_result.scalar() or 0
+
+        stmt = (
+            select(AuditLogModel)
+            .order_by(AuditLogModel.created_at.desc())
+            .offset(page * per_page)
+            .limit(per_page)
+        )
+        result = await self.session.execute(stmt)
+        logs = [self._to_domain(m) for m in result.scalars().all()]
+        return logs, total
 
     async def list_by_user(self, user_id: int, limit: int = 50) -> list[AuditLog]:
         stmt = (
