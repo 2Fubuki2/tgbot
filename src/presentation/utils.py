@@ -72,6 +72,19 @@ async def safe_edit(callback: CallbackQuery, *args, **kwargs) -> None:
             await fallback_send(text or "")
 
 
+async def send_text_replacing_photo(callback: CallbackQuery, text: str, **kwargs) -> None:
+    """Send a text message, deleting the current photo message first if present."""
+    msg = callback.message
+    if msg and msg.photo:
+        try:
+            await msg.delete()
+        except Exception:
+            logger.exception("Failed to delete photo message before sending text")
+        await callback.bot.send_message(callback.from_user.id, text, **kwargs)
+    else:
+        await safe_edit(callback, text, **kwargs)
+
+
 async def require_role(callback: CallbackQuery, role: UserRole) -> bool:
     """Check if user has required role. Returns True if allowed."""
     is_allowed = False

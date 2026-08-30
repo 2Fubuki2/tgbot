@@ -67,6 +67,9 @@ class IPaymentRepository(ABC):
     async def list_by_month(self, month: int, year: int) -> list[Payment]: ...
 
     @abstractmethod
+    async def delete(self, payment_id: int) -> None: ...
+
+    @abstractmethod
     async def total_confirmed_amount(self) -> Decimal: ...
 
     @abstractmethod
@@ -104,6 +107,9 @@ class IFeeRepository(ABC):
     @abstractmethod
     async def get_last_assessment(self) -> tuple[int, int] | None: ...
 
+    @abstractmethod
+    async def delete(self, fee_id: int) -> None: ...
+
 
 class IFineRepository(ABC):
     @abstractmethod
@@ -127,6 +133,9 @@ class IFineRepository(ABC):
     @abstractmethod
     async def total_active_amount(self) -> Decimal: ...
 
+    @abstractmethod
+    async def delete(self, fine_id: int) -> None: ...
+
 
 class IExpenseRepository(ABC):
     @abstractmethod
@@ -134,6 +143,12 @@ class IExpenseRepository(ABC):
 
     @abstractmethod
     async def create(self, expense: Expense) -> Expense: ...
+
+    @abstractmethod
+    async def update(self, expense: Expense) -> Expense: ...
+
+    @abstractmethod
+    async def delete(self, expense_id: int) -> None: ...
 
     @abstractmethod
     async def list_all(self) -> list[Expense]: ...

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from decimal import Decimal
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.domain.entities.fine import Fine
@@ -107,6 +107,10 @@ class FineRepository(IFineRepository):
         )
         result = await self.session.execute(stmt)
         return [self._to_domain(m) for m in result.scalars().all()]
+
+    async def delete(self, fine_id: int) -> None:
+        await self.session.execute(delete(FineModel).where(FineModel.id == fine_id))
+        await self.session.flush()
 
     async def total_active_amount(self) -> Decimal:
         stmt = select(func.coalesce(func.sum(FineModel.amount - FineModel.paid_amount), 0)).where(

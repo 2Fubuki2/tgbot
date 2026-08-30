@@ -238,7 +238,8 @@ async def callback_back(callback: CallbackQuery) -> None:
     )
     from src.presentation.handlers.treasurer import (
         list_pending_payments, list_members, show_stats, send_reminders,
-        member_account, member_payments, member_fines, member_details,
+        member_account, member_payments, member_fines, member_fees, member_details,
+        member_fees_for_user,
     )
     from src.presentation.handlers.fines import treasurer_fines
 
@@ -267,6 +268,8 @@ async def callback_back(callback: CallbackQuery) -> None:
         "member_account": member_account,
         "member_payments": member_payments,
         "member_fines": member_fines,
+        "member_fees": member_fees,
+        "member_fees:user_id": member_fees_for_user,
         "member_details": member_details,
     }
 

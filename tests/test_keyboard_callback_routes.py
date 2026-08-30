@@ -72,7 +72,6 @@ def test_keyboard_callbacks_have_matching_routes():
     )
 
 
-def test_payment_and_search_callbacks_are_exposed():
+def test_payment_callbacks_are_exposed():
     callbacks = extract_keyboard_callbacks()
-    assert "treasurer_user_search" in callbacks, "treasurer_user_search not found in keyboards"
     assert any(cb.startswith("pay_type:") for cb in callbacks), "pay_type callbacks not found in keyboards"

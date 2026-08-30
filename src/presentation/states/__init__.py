@@ -37,12 +37,21 @@ class ExpenseStates(StatesGroup):
     waiting_date = State()
 
 
+class ExpenseEditStates(StatesGroup):
+    """FSM для редактирования расхода."""
+    waiting_amount = State()
+    waiting_category = State()
+    waiting_comment = State()
+    waiting_date = State()
+
+
 # ─── Настройки (админ) ──────────────────────────
 class SettingsStates(StatesGroup):
     """FSM для изменения настроек."""
     waiting_fee = State()
     waiting_details = State()
     waiting_club_name = State()
+    waiting_assessment_day = State()
 
 
 class AddUserStates(StatesGroup):
@@ -50,11 +59,6 @@ class AddUserStates(StatesGroup):
     waiting_telegram_id = State()
     waiting_full_name = State()
     waiting_role = State()
-
-
-class SearchUserStates(StatesGroup):
-    """FSM для поиска пользователя (админ)."""
-    waiting_query = State()
 
 
 # ─── Начисление взносов (казначей/админ) ──────────
@@ -75,3 +79,26 @@ class TreasuryAdjustStates(StatesGroup):
 class RenameUserStates(StatesGroup):
     """FSM для изменения никнейма участника."""
     waiting_new_name = State()
+
+
+# ─── Рассылка (админ) ──────────────────────────
+class BroadcastStates(StatesGroup):
+    """FSM для рассылки сообщений."""
+    waiting_text = State()
+
+
+# ─── Редактирование истории (админ) ─────────────
+class LedgerEditStates(StatesGroup):
+    """FSM для редактирования платежей, штрафов и взносов."""
+    # Payments
+    edit_payment_amount = State()
+    edit_payment_month = State()
+    edit_payment_comment = State()
+    # Fines
+    edit_fine_amount = State()
+    edit_fine_reason = State()
+    edit_fine_comment = State()
+    # Fees
+    edit_fee_amount = State()
+    edit_fee_month = State()
+    edit_fee_status = State()

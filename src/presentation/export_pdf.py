@@ -92,7 +92,8 @@ def generate_export_pdf(
     elements = []
 
     # ── Заголовок ──
-    now_str = datetime.utcnow().strftime("%d %B %Y")
+    from src.infrastructure.timezone import now_msk
+    now_str = now_msk().strftime("%d %B %Y")
     elements.append(Paragraph(f"<b>Отчёт клуба</b>", styles["TitleRU"]))
     elements.append(Paragraph(f"Дата формирования: {now_str}", styles["BodyRU"]))
     elements.append(Spacer(1, 6 * mm))

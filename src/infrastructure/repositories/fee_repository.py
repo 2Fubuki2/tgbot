@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from decimal import Decimal
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.domain.entities.monthly_fee import MonthlyFee
@@ -21,6 +21,7 @@ class FeeRepository(IFeeRepository):
             id=model.id,
             user_id=model.user_id,
             amount=model.__dict__.get('amount'),
+            paid_amount=model.__dict__.get('paid_amount', Decimal('0')),
             month=model.__dict__.get('month'),
             year=model.__dict__.get('year'),
             status=FeeStatus(model.__dict__.get('status')) if model.__dict__.get('status') is not None else FeeStatus.PENDING,
@@ -35,6 +36,7 @@ class FeeRepository(IFeeRepository):
             id=entity.id,
             user_id=entity.user_id,
             amount=entity.amount,
+            paid_amount=entity.paid_amount,
             month=entity.month,
             year=entity.year,
             status=entity.status.value if entity.status else FeeStatus.PENDING.value,
@@ -72,6 +74,7 @@ class FeeRepository(IFeeRepository):
             raise ValueError(f"MonthlyFee with id {fee.id} not found")
 
         model.amount = fee.amount
+        model.paid_amount = fee.paid_amount
         model.status = fee.status.value if fee.status else model.status
         model.comment = fee.comment
         model.paid_at = fee.paid_at
@@ -109,11 +112,16 @@ class FeeRepository(IFeeRepository):
         return [self._to_domain(m) for m in result.scalars().all()]
 
     async def total_pending_amount(self) -> Decimal:
-        stmt = select(func.coalesce(func.sum(MonthlyFeeModel.amount), 0)).where(
-            MonthlyFeeModel.status == FeeStatus.PENDING.value
+        stmt = select(func.coalesce(func.sum(MonthlyFeeModel.amount - MonthlyFeeModel.paid_amount), 0)).where(
+            MonthlyFeeModel.status == FeeStatus.PENDING.value,
+            MonthlyFeeModel.amount > MonthlyFeeModel.paid_amount,
         )
         result = await self.session.execute(stmt)
         return result.scalar() or Decimal("0")
+
+    async def delete(self, fee_id: int) -> None:
+        await self.session.execute(delete(MonthlyFeeModel).where(MonthlyFeeModel.id == fee_id))
+        await self.session.flush()
 
     async def get_last_assessment(self) -> tuple[int, int] | None:
         stmt = (

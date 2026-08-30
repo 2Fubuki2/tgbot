@@ -18,6 +18,7 @@ from src.infrastructure.repositories.fine_repository import FineRepository
 from src.infrastructure.repositories.user_repository import UserRepository
 from src.presentation.keyboards.common import back_keyboard, build_kb, confirm_cancel_keyboard, main_menu_keyboard
 from src.presentation.handlers.common import callback_main_menu
+from src.infrastructure.timezone import now_msk
 from src.presentation.utils import safe_edit, require_role
 from src.presentation.states import FineStates
 
@@ -185,7 +186,7 @@ async def fine_cancel(callback: CallbackQuery) -> None:
         fine.status = FineStatus.CANCELLED
         canceller = await user_repo.get_by_telegram_id(callback.from_user.id)
         fine.cancelled_by = int(canceller.id) if canceller and canceller.id is not None else None
-        fine.cancelled_at = datetime.utcnow()
+        fine.cancelled_at = now_msk()
         await fine_repo.update(fine)
 
         await audit_repo.create(AuditLog(

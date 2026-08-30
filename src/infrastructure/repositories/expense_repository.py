@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from decimal import Decimal
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.domain.entities.expense import Expense
@@ -49,6 +49,25 @@ class ExpenseRepository(IExpenseRepository):
         self.session.add(model)
         await self.session.flush()
         return self._to_domain(model)
+
+    async def update(self, expense: Expense) -> Expense:
+        stmt = select(ExpenseModel).where(ExpenseModel.id == expense.id)
+        result = await self.session.execute(stmt)
+        model = result.scalar_one_or_none()
+        if not model:
+            raise ValueError(f"Expense with id {expense.id} not found")
+
+        model.amount = expense.amount
+        model.category = expense.category.value if expense.category else ExpenseCategory.OTHER.value
+        model.comment = expense.comment
+        model.created_by = expense.created_by
+        model.expense_date = expense.expense_date
+        await self.session.flush()
+        return self._to_domain(model)
+
+    async def delete(self, expense_id: int) -> None:
+        await self.session.execute(delete(ExpenseModel).where(ExpenseModel.id == expense_id))
+        await self.session.flush()
 
     async def list_all(self) -> list[Expense]:
         stmt = select(ExpenseModel).order_by(ExpenseModel.expense_date.desc())

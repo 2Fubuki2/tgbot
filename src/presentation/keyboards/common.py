@@ -75,6 +75,7 @@ def club_budget_keyboard() -> InlineKeyboardMarkup:
         [("📋 Все участники", "treasurer_members")],
         [("⚠️ Штрафы", "treasurer_fines")],
         [("💸 Расходы клуба", "treasurer_expenses")],
+        [("📅 Хронология", "treasurer_timeline")],
         [("📬 Напоминания", "treasurer_remind")],
         [("📊 Статистика", "treasurer_stats")],
         [BACK_BTN],
@@ -90,6 +91,7 @@ def admin_management_keyboard() -> InlineKeyboardMarkup:
         [("💰 Коррекция казны", "admin_treasury_adjust")],
         [("📋 Журнал", "admin_log")],
         [("📄 Экспорт", "admin_export")],
+        [("📣 Рассылка", "admin_broadcast")],
         [BACK_BTN],
     ])
 
@@ -129,7 +131,6 @@ def admin_users_keyboard() -> InlineKeyboardMarkup:
     return build_kb([
         [("➕ Добавить участника", "admin_user_add")],
         [("📋 Все участники", "admin_user_list")],
-        [("🔍 Поиск", "admin_user_search")],
         [MAIN_MENU_BTN],
     ])
 
@@ -184,6 +185,8 @@ def admin_settings_keyboard() -> InlineKeyboardMarkup:
         [("💰 Размер взноса", "admin_set_fee")],
         [("💳 Реквизиты", "admin_set_details")],
         [("🏷 Название клуба", "admin_set_name")],
+        [("📅 Дата начисления", "admin_set_assessment_day")],
+        [("⚡ Начислить сейчас", "admin_assess_now")],
         [MAIN_MENU_BTN],
     ])
 
@@ -231,10 +234,22 @@ def payment_type_keyboard() -> InlineKeyboardMarkup:
 def member_detail_keyboard(user_id: int) -> InlineKeyboardMarkup:
     return build_kb([
         [("💰 История платежей", f"member_payments:{user_id}")],
+        [("⚠️ Штрафы", f"member_fines:{user_id}")],
+        [("💰 Взносы", f"member_fees:{user_id}")],
+        [("🔙 Назад", "back")],
+    ])
+
+
+def member_detail_admin_keyboard(user_id: int) -> InlineKeyboardMarkup:
+    """Member detail view for admins — with ledger edit buttons."""
+    return build_kb([
+        [("📋 История платежей", f"ledger_payments:{user_id}")],
+        [("⚠️ История штрафов", f"ledger_fines:{user_id}")],
+        [("💰 История взносов", f"ledger_fees:{user_id}")],
         [("💳 Принять оплату", f"treasurer_pay:{user_id}")],
         [("⚠️ Начислить штраф", f"fine_issue:{user_id}")],
         [("📬 Отправить напоминание", f"remind_user:{user_id}")],
-        [BACK_BTN],
+        [("🔙 Назад", "back")],
     ])
 
 
@@ -262,9 +277,46 @@ def expense_categories_keyboard() -> InlineKeyboardMarkup:
     ])
 
 
+def expense_edit_keyboard(expense_id: int) -> InlineKeyboardMarkup:
+    """Keyboard for editing/deleting an expense."""
+    return build_kb([
+        [("✏️ Изменить", f"expense_edit:{expense_id}")],
+        [("🗑 Удалить", f"expense_delete_confirm:{expense_id}")],
+        [BACK_BTN],
+    ])
+
+
 # ─── Подтверждение ─────────────────────────────────
 def confirm_keyboard(callback_data: str) -> InlineKeyboardMarkup:
     return build_kb([
         [("✅ Да", callback_data)],
         [("❌ Нет", "back")],
+    ])
+
+
+# ─── Распределение платежа по штрафам ──────────────
+def fine_allocation_keyboard(payment_id: int, fines: list) -> InlineKeyboardMarkup:
+    """Keyboard to allocate a fine-type payment to a specific active fine."""
+    rows = []
+    for fine in fines:
+        rows.append((f"⚠️ {fine.reason} — {fine.remaining_amount:,.2f}₽", f"fine_allocate:{payment_id}:{fine.id}"))
+    rows.append(("⏩ Прочие остаток → баланс", f"fine_overflow:{payment_id}"))
+    rows.append(("🔙 Назад", f"payment_confirm:{payment_id}"))
+    return build_kb(rows)
+
+
+# ─── Хронология ──────────────────────────────────────
+def timeline_user_select_keyboard(users: list[tuple[int, str]]) -> InlineKeyboardMarkup:
+    """Paginated member selector for timeline."""
+    builder = InlineKeyboardBuilder()
+    per_page = 8
+    for user_id, name in users[:per_page]:
+        builder.row(InlineKeyboardButton(text=name, callback_data=f"timeline_user:{user_id}"))
+    builder.row(InlineKeyboardButton(text=MAIN_MENU_BTN[0], callback_data=MAIN_MENU_BTN[1]))
+    return builder.as_markup()
+
+
+def timeline_item_keyboard(user_id: int) -> InlineKeyboardMarkup:
+    return build_kb([
+        [BACK_BTN],
     ])

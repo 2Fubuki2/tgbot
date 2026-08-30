@@ -142,10 +142,13 @@ class UserRepository(IUserRepository):
         return result.scalar() or 0
 
     async def count_debtors(self) -> int:
-        """Count users with any pending fees or active fines."""
+        """Count users with any outstanding fees (including partial) or active fines."""
         subq = (
             select(MonthlyFeeModel.user_id)
-            .where(MonthlyFeeModel.status == FeeStatus.PENDING.value)
+            .where(
+                MonthlyFeeModel.status == FeeStatus.PENDING.value,
+                MonthlyFeeModel.amount > MonthlyFeeModel.paid_amount,
+            )
             .union(
                 select(FineModel.user_id).where(FineModel.status == FineStatus.ACTIVE.value)
             )

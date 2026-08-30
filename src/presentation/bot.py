@@ -13,6 +13,7 @@ from src.presentation.handlers import (
     admin,
     common,
     fines,
+    ledger_edit,
     money,
     treasurer,
 )
@@ -94,6 +95,7 @@ def create_dispatcher() -> Dispatcher:
     dp.include_router(fines.router)
     dp.include_router(treasurer.router)
     dp.include_router(admin.router)
+    dp.include_router(ledger_edit.router)
     if member:
         dp.include_router(member.router)
 

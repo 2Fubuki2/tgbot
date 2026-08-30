@@ -34,6 +34,7 @@ from src.presentation.keyboards.common import (
     build_kb,
     confirm_cancel_keyboard,
     expense_categories_keyboard,
+    expense_edit_keyboard,
     main_menu_keyboard,
     user_actions_keyboard,
 )
@@ -44,8 +45,9 @@ from src.presentation.texts import (
 from src.presentation.utils import safe_edit, require_role
 from src.presentation.states import (
     AddUserStates,
+    BroadcastStates,
     ExpenseStates,
-    SearchUserStates,
+    ExpenseEditStates,
     SettingsStates,
     TreasuryAdjustStates,
     RenameUserStates,
@@ -556,46 +558,6 @@ async def callback_user_actions(callback: CallbackQuery) -> None:
         )
 
 
-@router.callback_query(F.data == "admin_user_search")
-async def admin_user_search(callback: CallbackQuery, state: FSMContext) -> None:
-    if not await require_role(callback, UserRole.ADMIN):
-        return
-    await state.set_state(SearchUserStates.waiting_query)
-    await safe_edit(
-        callback,
-        "🔍 <b>Поиск пользователя</b>\n\nВведите имя, username или Telegram ID:",
-        reply_markup=back_keyboard("admin_users"),
-    )
-
-
-@router.message(SearchUserStates.waiting_query)
-async def admin_user_search_query(message: Message, state: FSMContext) -> None:
-    query = message.text.strip()
-    async for session in get_session():
-        repo = UserRepository(session)
-        users = await repo.search(query)
-
-        if not users:
-            await message.answer("❌ Пользователи не найдены. Попробуйте другой запрос.")
-            await state.clear()
-            return
-
-        lines = ["👥 <b>Результаты поиска</b>:\n"]
-        buttons = []
-        for u in users[:10]:
-            lines.append(
-                f"👤 <b>{escape(u.full_name)}</b> — {escape(u.role.value)}\n"
-                f"   ID: {u.id} | @{escape(u.username) if u.username else '—'}\n"
-            )
-            buttons.append([(f"{u.full_name}", f"user_actions:{u.id}")])
-
-        await message.answer(
-            "\n".join(lines),
-            reply_markup=build_kb(buttons + [[("🔙 Назад", "admin_users")]]),
-        )
-    await state.clear()
-
-
 # ─── Админ: восстановление доступа пользователя ───────────────────
 @router.callback_query(F.data.startswith("admin_restore:"))
 async def admin_restore(callback: CallbackQuery) -> None:
@@ -799,6 +761,120 @@ async def admin_set_name_value(message: Message, state: FSMContext) -> None:
     await state.clear()
 
 
+@router.callback_query(F.data == "admin_set_assessment_day")
+async def admin_set_assessment_day(callback: CallbackQuery, state: FSMContext) -> None:
+    if not await require_role(callback, UserRole.ADMIN):
+        return
+    async for session in get_session():
+        repo = ClubSettingsRepository(session)
+        settings = await repo.get()
+        current_day = settings.get("fee_assessment_day", 1)
+    await safe_edit(
+        callback,
+        f"📅 <b>Дата начисления взносов</b>\n\n"
+        f"Сейчас: <b>{current_day}</b> число каждого месяца\n\n"
+        f"Введите день месяца (1-31) для автоматического начисления:",
+        reply_markup=back_keyboard(),
+    )
+    await state.set_state(SettingsStates.waiting_assessment_day)
+
+
+@router.message(SettingsStates.waiting_assessment_day)
+async def admin_set_assessment_day_value(message: Message, state: FSMContext) -> None:
+    if message.text is None:
+        return
+    try:
+        day = int(message.text.strip())
+        if not (1 <= day <= 31):
+            raise ValueError
+    except ValueError:
+        await message.answer("❌ Введите число от 1 до 31.")
+        return
+    async for session in get_session():
+        repo = ClubSettingsRepository(session)
+        await repo.update(fee_assessment_day=day)
+    await message.answer(f"✅ Дата начисления установлена на <b>{day}-е</b> число каждого месяца.")
+    await state.clear()
+
+
+@router.callback_query(F.data == "admin_assess_now")
+async def admin_assess_now(callback: CallbackQuery) -> None:
+    """Manually trigger fee assessment for current month (works in webhook mode too)."""
+    if not await require_role(callback, UserRole.ADMIN):
+        return
+    from datetime import datetime
+    from src.infrastructure.timezone import now_msk
+    from src.infrastructure.repositories.user_repository import UserRepository
+    from src.infrastructure.repositories.fee_repository import FeeRepository
+    from src.infrastructure.repositories.settings_repository import ClubSettingsRepository
+    from src.infrastructure.repositories.audit_repository import AuditLogRepository
+    from src.domain.entities.monthly_fee import MonthlyFee
+    from src.domain.value_objects.fee_status import FeeStatus
+    from src.domain.entities.audit_log import AuditLog
+
+    async for session in get_session():
+        user_repo = UserRepository(session)
+        fee_repo = FeeRepository(session)
+        settings_repo = ClubSettingsRepository(session)
+        audit_repo = AuditLogRepository(session)
+        monthly_fee = await settings_repo.get_monthly_fee()
+        members = await user_repo.list_active()
+        now = now_msk()
+
+        # Check if already assessed
+        existing = await fee_repo.list_by_month(now.month, now.year)
+        if existing:
+            await safe_edit(callback,
+                f"ℹ️ Взносы за {now.month:02d}/{now.year} уже начислены ({len(existing)} участников).",
+                reply_markup=back_keyboard(),
+            )
+            return
+
+        assessed = 0
+        for member in members:
+            if not await fee_repo.get_by_user_month(member.id, now.month, now.year):
+                fee = MonthlyFee(
+                    user_id=int(member.id) if member.id else 0,
+                    amount=monthly_fee,
+                    month=now.month,
+                    year=now.year,
+                    status=FeeStatus.PENDING,
+                )
+                await fee_repo.create(fee)
+                assessed += 1
+
+        await settings_repo.update(last_fee_assessment=datetime(now.year, now.month, 1))
+
+        actor = await user_repo.get_by_telegram_id(callback.from_user.id)
+        if actor:
+            await audit_repo.create(AuditLog(
+                user_id=int(actor.id) if actor.id else 0,
+                action="assess_fees",
+                entity_type="monthly_fee",
+                details={"count": assessed, "month": now.month, "year": now.year, "amount": str(monthly_fee)},
+            ))
+
+        # Notify members
+        for member in members:
+            try:
+                await callback.bot.send_message(
+                    member.telegram_id,
+                    f"💰 <b>Начислен взнос</b>\n\n"
+                    f"📅 За: {now.month:02d}/{now.year}\n"
+                    f"💵 Сумма: <b>{monthly_fee:,.2f}₽</b>\n\n"
+                    f"Оплатить можно через меню 💰 Мой бюджет → 📤 Я оплатил",
+                )
+            except Exception:
+                logger.exception("Failed to notify %s", member.telegram_id)
+
+        await safe_edit(callback,
+            f"✅ Взносы за {now.month:02d}/{now.year} начислены: {assessed} участников.\n"
+            f"💰 {monthly_fee:,.2f}₽ × {assessed} = <b>{monthly_fee * assessed:,.2f}₽</b> в месяц.",
+            reply_markup=back_keyboard(),
+        )
+    await callback.answer()
+
+
 # ─── Казначей: расходы ───────────────────────────
 
 @router.callback_query(F.data == "treasurer_expenses")
@@ -942,16 +1018,319 @@ async def expense_list(callback: CallbackQuery) -> None:
         else:
             total = sum((e.amount for e in expenses), Decimal("0"))
             lines = [f"💸 <b>Расходы клуба</b> (всего: {total:,.2f}₽)\n"]
+            kb_rows = []
             for e in expenses[:20]:
                 lines.append(
                     f"📅 {e.expense_date} | <b>{e.amount:,.2f}₽</b> | {e.category.value}\n"
                     f"   {e.comment or ''}"
                 )
+                kb_rows.append([
+                    (f"💸 {e.amount:,.2f}₽  {e.expense_date}  {e.category.value}", f"expense_view:{e.id}"),
+                ])
+            kb_rows.append([("🔙 Назад", "back")])
             await safe_edit(
                 callback,
                 "\n".join(lines),
-                reply_markup=back_keyboard(),
+                reply_markup=build_kb(kb_rows),
             )
+
+
+@router.callback_query(F.data.startswith("expense_view:"))
+async def expense_view(callback: CallbackQuery) -> None:
+    """Show expense detail with edit/delete buttons."""
+    if not await require_role(callback, UserRole.TREASURER):
+        return
+    expense_id = int((callback.data or "").split(":")[1])
+    async for session in get_session():
+        repo = ExpenseRepository(session)
+        expense = await repo.get_by_id(expense_id)
+        if not expense:
+            await callback.answer("❌ Расход не найден", show_alert=True)
+            return
+        await safe_edit(
+            callback,
+            f"💸 <b>Расход #{expense_id}</b>\n"
+            f"💰 Сумма: <code>{expense.amount:,.2f}₽</code>\n"
+            f"📂 Категория: <code>{expense.category.value}</code>\n"
+            f"📅 Дата: <code>{expense.expense_date}</code>\n"
+            f"💬 Комментарий: <code>{expense.comment or '—'}</code>\n"
+            f"👤 Создал: <code>{expense.created_by}</code>",
+            reply_markup=expense_edit_keyboard(expense_id),
+        )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("expense_edit:"))
+async def expense_edit_start(callback: CallbackQuery, state: FSMContext) -> None:
+    """Start editing an expense."""
+    if not await require_role(callback, UserRole.TREASURER):
+        return
+    expense_id = int((callback.data or "").split(":")[1])
+    async for session in get_session():
+        repo = ExpenseRepository(session)
+        expense = await repo.get_by_id(expense_id)
+        if not expense:
+            await callback.answer("❌ Расход не найден", show_alert=True)
+            return
+        await state.update_data(
+            edit_expense_id=expense_id,
+            edit_expense_old={
+                "amount": str(expense.amount),
+                "category": expense.category.value,
+                "comment": expense.comment or "",
+                "expense_date": str(expense.expense_date),
+                "created_by": expense.created_by,
+            },
+        )
+        await state.set_state(ExpenseEditStates.waiting_amount)
+        await safe_edit(
+            callback,
+            f"✏️ <b>Редактирование расхода #{expense_id}</b>\n"
+            f"Сумма: <code>{expense.amount:,.2f}₽</code>\n"
+            f"Категория: <code>{expense.category.value}</code>\n"
+            f"Комментарий: <code>{expense.comment or '—'}</code>\n"
+            f"Дата: <code>{expense.expense_date}</code>\n\n"
+            f"Введите <b>новую сумму</b> (или /skip чтобы оставить текущую):",
+            reply_markup=confirm_cancel_keyboard("expense_save_edit", "back"),
+        )
+    await callback.answer()
+
+
+@router.message(ExpenseEditStates.waiting_amount)
+async def expense_edit_amount(message: Message, state: FSMContext) -> None:
+    if message.text is None:
+        return
+    if message.text.strip().lower() in ("/cancel", "отмена"):
+        await state.clear()
+        await message.answer("❌ Отменено")
+        return
+    data = await state.get_data()
+    if message.text.strip().lower() == "/skip":
+        await state.set_state(ExpenseEditStates.waiting_category)
+        await message.answer(
+            "Выберите <b>категорию</b> или /skip:",
+            reply_markup=expense_categories_keyboard(),
+        )
+        return
+    try:
+        amount = Decimal(message.text.strip().replace(",", "."))
+        if amount <= 0:
+            raise ValueError
+        await state.update_data(edit_amount=amount)
+    except Exception:
+        await message.answer("❌ Введите корректную сумму.")
+        return
+    await state.set_state(ExpenseEditStates.waiting_category)
+    await message.answer(
+        "Выберите <b>категорию</b> или /skip:",
+        reply_markup=expense_categories_keyboard(),
+    )
+
+
+@router.callback_query(ExpenseEditStates.waiting_category, F.data.startswith("expense_cat:"))
+async def expense_edit_category(callback: CallbackQuery, state: FSMContext) -> None:
+    category = callback.data.split(":")[1]
+    await state.update_data(edit_category=category)
+    await state.set_state(ExpenseEditStates.waiting_comment)
+    await safe_edit(
+        callback,
+        "Введите <b>комментарий</b> (или /skip):",
+        reply_markup=confirm_cancel_keyboard("expense_save_edit", "back"),
+    )
+
+
+@router.message(ExpenseEditStates.waiting_category)
+async def expense_edit_category_text(message: Message, state: FSMContext) -> None:
+    if message.text is None:
+        return
+    if message.text.strip().lower() in ("/cancel", "отмена"):
+        await state.clear()
+        await message.answer("❌ Отменено")
+        return
+    if message.text.strip().lower() == "/skip":
+        await state.set_state(ExpenseEditStates.waiting_comment)
+        await message.answer(
+            "Введите <b>комментарий</b> (или /skip):",
+            reply_markup=confirm_cancel_keyboard("expense_save_edit", "back"),
+        )
+        return
+    await state.update_data(edit_category=message.text.strip())
+    await state.set_state(ExpenseEditStates.waiting_comment)
+    await message.answer(
+        "Введите <b>комментарий</b> (или /skip):",
+        reply_markup=confirm_cancel_keyboard("expense_save_edit", "back"),
+    )
+
+
+@router.message(ExpenseEditStates.waiting_comment)
+async def expense_edit_comment(message: Message, state: FSMContext) -> None:
+    if message.text is None:
+        return
+    if message.text.strip().lower() in ("/cancel", "отмена"):
+        await state.clear()
+        await message.answer("❌ Отменено")
+        return
+    data = await state.get_data()
+    new_comment = "" if message.text.strip().lower() == "/skip" else message.text.strip()
+    await state.update_data(edit_comment=new_comment)
+    await state.set_state(ExpenseEditStates.waiting_date)
+    await message.answer(
+        f"Введите <b>дату</b> в формате ГГГГ-ММ-ДД (или /skip для текущей):",
+        reply_markup=confirm_cancel_keyboard("expense_save_edit", "back"),
+    )
+
+
+@router.message(ExpenseEditStates.waiting_date)
+async def expense_edit_date(message: Message, state: FSMContext) -> None:
+    if message.text is None:
+        return
+    if message.text.strip().lower() in ("/cancel", "отмена"):
+        await state.clear()
+        await message.answer("❌ Отменено")
+        return
+    data = await state.get_data()
+    if message.text.strip().lower() == "/skip":
+        new_date = date.today()
+    else:
+        try:
+            new_date = date.fromisoformat(message.text.strip())
+        except Exception:
+            await message.answer("❌ Неверный формат даты. Используйте ГГГГ-ММ-ДД.")
+            return
+    await state.update_data(edit_date=new_date)
+    await _save_edit_expense(message, state)
+
+
+async def _save_edit_expense(source, state: FSMContext) -> None:
+    data = await state.get_data()
+    expense_id = data.get("edit_expense_id")
+    if not expense_id:
+        await source.answer("❌ Ошибка сессии")
+        await state.clear()
+        return
+
+    async for session in get_session():
+        repo = ExpenseRepository(session)
+        user_repo = UserRepository(session)
+        audit_repo = AuditLogRepository(session)
+
+        expense = await repo.get_by_id(expense_id)
+        if not expense:
+            await source.answer("❌ Расход не найден", show_alert=True)
+            await state.clear()
+            return
+
+        old_amount = expense.amount
+        old_category = expense.category.value
+        old_comment = expense.comment or ""
+        old_date = expense.expense_date
+
+        expense.amount = Decimal(data.get("edit_amount", old_amount))
+        expense.category = ExpenseCategory(data.get("edit_category", old_category))
+        expense.comment = data.get("edit_comment", old_comment)
+        expense.expense_date = data.get("edit_date", old_date)
+
+        await repo.update(expense)
+
+        # Audit
+        actor = await user_repo.get_by_telegram_id(source.from_user.id if hasattr(source, "from_user") and source.from_user else 0)
+        if actor:
+            await audit_repo.create(AuditLog(
+                user_id=int(actor.id) if actor.id is not None else 0,
+                action="edit_expense",
+                entity_type="expense",
+                entity_id=expense.id,
+                details={
+                    "old_amount": str(old_amount),
+                    "new_amount": str(expense.amount),
+                    "old_category": old_category,
+                    "new_category": expense.category.value,
+                    "old_comment": old_comment,
+                    "new_comment": expense.comment or "",
+                    "old_date": str(old_date),
+                    "new_date": str(expense.expense_date),
+                },
+            ))
+
+        await safe_edit(
+            source,
+            f"✅ Расход #{expense_id} обновлён!\n"
+            f"💰 Сумма: <b>{expense.amount:,.2f}₽</b>\n"
+            f"📂 Категория: <b>{expense.category.value}</b>\n"
+            f"📅 Дата: <b>{expense.expense_date}</b>\n"
+            f"💬 Комментарий: <b>{expense.comment or '—'}</b>",
+            reply_markup=back_keyboard("expense_list"),
+        )
+    await state.clear()
+
+
+@router.callback_query(F.data.startswith("expense_delete_confirm:"))
+async def expense_delete_confirm(callback: CallbackQuery) -> None:
+    if not await require_role(callback, UserRole.TREASURER):
+        return
+    expense_id = int((callback.data or "").split(":")[1])
+    async for session in get_session():
+        repo = ExpenseRepository(session)
+        expense = await repo.get_by_id(expense_id)
+        if not expense:
+            await callback.answer("❌ Расход не найден", show_alert=True)
+            return
+        await safe_edit(
+            callback,
+            f"🗑 <b>Подтверждение удаления</b>\n\n"
+            f"Вы уверены, что хотите удалить расход #{expense_id}?\n"
+            f"💰 Сумма: <b>{expense.amount:,.2f}₽</b>\n"
+            f"📂 Категория: <b>{expense.category.value}</b>\n"
+            f"📅 Дата: <b>{expense.expense_date}</b>\n"
+            f"💬 Комментарий: <b>{expense.comment or '—'}</b>",
+            reply_markup=confirm_cancel_keyboard(f"expense_delete:{expense_id}", "back"),
+        )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("expense_delete:"))
+async def expense_delete(callback: CallbackQuery) -> None:
+    if not await require_role(callback, UserRole.TREASURER):
+        return
+    expense_id = int((callback.data or "").split(":")[1])
+    async for session in get_session():
+        repo = ExpenseRepository(session)
+        user_repo = UserRepository(session)
+        audit_repo = AuditLogRepository(session)
+
+        expense = await repo.get_by_id(expense_id)
+        if not expense:
+            await callback.answer("❌ Расход не найден", show_alert=True)
+            return
+
+        # Store for audit
+        audit_details = {
+            "amount": str(expense.amount),
+            "category": expense.category.value,
+            "comment": expense.comment or "",
+            "expense_date": str(expense.expense_date),
+            "created_by": expense.created_by,
+        }
+
+        await repo.delete(expense_id)
+
+        # Audit
+        actor = await user_repo.get_by_telegram_id(callback.from_user.id)
+        if actor:
+            await audit_repo.create(AuditLog(
+                user_id=int(actor.id) if actor.id is not None else 0,
+                action="delete_expense",
+                entity_type="expense",
+                entity_id=expense_id,
+                details=audit_details,
+            ))
+
+        await safe_edit(
+            callback,
+            f"✅ Расход #{expense_id} удалён.",
+            reply_markup=back_keyboard("expense_list"),
+        )
+    await callback.answer()
 
 
 # ─── Админ: статистика ───────────────────────────
@@ -1011,13 +1390,9 @@ async def _show_admin_log_page(callback: CallbackQuery, page: int) -> None:
 
         await safe_edit(
             callback,
-<<<<<<< HEAD
-            "\n".join(lines),
-            reply_markup=back_keyboard(),
-=======
-            "\n".join(lines).strip(),
+            "
+".join(lines).strip(),
             reply_markup=build_kb(kb_rows),
->>>>>>> 00d2ec7 (final version before deploy)
         )
 
 
@@ -1185,9 +1560,115 @@ async def admin_export(callback: CallbackQuery) -> None:
     await callback.answer()
     # Return to main menu after export completes
     async for session in get_session():
-        from src.infrastructure.repositories.user_repository import UserRepository
         user = await UserRepository(session).get_by_telegram_id(callback.from_user.id)
     kb = main_menu_keyboard(user.role if user else UserRole.MEMBER)
     await callback.message.answer("🏠 Главное меню", reply_markup=kb)
+
+
+# ─── Админ: рассылка ───────────────────────────
+
+@router.callback_query(F.data == "admin_broadcast")
+async def admin_broadcast(callback: CallbackQuery, state: FSMContext) -> None:
+    """Start broadcast FSM."""
+    if not await require_role(callback, UserRole.ADMIN):
+        return
+    await state.set_state(BroadcastStates.waiting_text)
+    await safe_edit(
+        callback,
+        "📣 <b>Рассылка</b>\n\n"
+        "Введите текст сообщения (будет отправлено всем активным участникам):\n\n"
+        "Отправьте отмену словом «отмена».",
+        reply_markup=cancel_keyboard(),
+    )
+    await callback.answer()
+
+
+@router.message(BroadcastStates.waiting_text)
+async def admin_broadcast_message(message: Message, state: FSMContext) -> None:
+    """Broadcast the message to all active users."""
+    from aiogram.filters import Command
+    text = message.text or message.caption or ""
+    if text.strip().lower() in ("отмена", "cancel", "/cancel"):
+        await state.clear()
+        await message.answer("❌ Рассылка отменена.")
+        return
+
+    async for session in get_session():
+        user_repo = UserRepository(session)
+        members = await user_repo.list_active()
+        bot = message.bot
+
+        sent = 0
+        failed = 0
+        for member in members:
+            try:
+                await bot.send_message(member.telegram_id, text)
+                sent += 1
+            except Exception:
+                failed += 1
+                logger.exception("Broadcast failed for member %s", member.telegram_id)
+
+        await state.clear()
+        summary = f"✅ Рассылка завершена.\nОтправлено: {sent}\nОшибок: {failed}"
+        if failed:
+            await message.answer(summary, parse_mode="HTML")
+        kb = main_menu_keyboard(UserRole.ADMIN)
+        await message.answer("🏠 Главное меню", reply_markup=kb)
+
+
+# ─── Админ: рассылка ───────────────────────────
+
+@router.callback_query(F.data == "admin_broadcast")
+async def admin_broadcast(callback: CallbackQuery, state: FSMContext) -> None:
+    """Start broadcast FSM."""
+    if not await require_role(callback, UserRole.ADMIN):
+        return
+    await state.set_state(BroadcastStates.waiting_text)
+    await safe_edit(
+        callback,
+        "📣 <b>Рассылка</b>\n\n"
+        "Введите текст сообщения (будет отправлено всем активным участникам):\n\n"
+        "Отправьте отмену словом «отмена».",
+        reply_markup=cancel_keyboard(),
+    )
+    await callback.answer()
+
+
+@router.message(BroadcastStates.waiting_text)
+async def admin_broadcast_message(message: Message, state: FSMContext) -> None:
+    """Broadcast the message to all active users."""
+    from aiogram.filters import Command
+    text = message.text or message.caption or ""
+    if text.strip().lower() in ("отмена", "cancel", "/cancel"):
+        await state.clear()
+        await message.answer("❌ Рассылка отменена.")
+        return
+
+    async for session in get_session():
+        user_repo = UserRepository(session)
+        members = await user_repo.list_active()
+        bot = message.bot
+
+        sent = 0
+        failed = 0
+        for member in members:
+            try:
+                await bot.send_message(member.telegram_id, text)
+                sent += 1
+            except Exception:
+                failed += 1
+                logger.exception("Broadcast failed for member %s", member.telegram_id)
+
+        await state.clear()
+        summary = f"✅ Рассылка завершена.\nОтправлено: {sent}\nОшибок: {failed}"
+        if failed:
+            await message.answer(summary, parse_mode="HTML")
+            kb = main_menu_keyboard(UserRole.ADMIN)
+            await message.answer("🏠 Главное меню", reply_markup=kb)
+            return
+
+        await message.answer(summary, parse_mode="HTML")
+        kb = main_menu_keyboard(UserRole.ADMIN)
+        await message.answer("🏠 Главное меню", reply_markup=kb)
 
 

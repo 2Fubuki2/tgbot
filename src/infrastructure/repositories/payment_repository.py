@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from decimal import Decimal
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.domain.entities.payment import Payment
@@ -112,6 +112,10 @@ class PaymentRepository(IPaymentRepository):
         )
         result = await self.session.execute(stmt)
         return [self._to_domain(m) for m in result.scalars().all()]
+
+    async def delete(self, payment_id: int) -> None:
+        await self.session.execute(delete(PaymentModel).where(PaymentModel.id == payment_id))
+        await self.session.flush()
 
     async def total_confirmed_amount(self) -> Decimal:
         stmt = select(func.coalesce(func.sum(PaymentModel.amount), 0)).where(

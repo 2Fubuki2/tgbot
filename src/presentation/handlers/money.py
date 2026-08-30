@@ -16,6 +16,7 @@ from src.infrastructure.database.session import get_session
 from src.infrastructure.repositories.fine_repository import FineRepository
 from src.infrastructure.repositories.payment_repository import PaymentRepository
 from src.infrastructure.repositories.user_repository import UserRepository
+from src.infrastructure.timezone import now_msk, today_msk
 from src.presentation.keyboards.common import (
     back_keyboard,
     build_kb,
@@ -142,7 +143,7 @@ async def member_pay_amount(message: Message, state: FSMContext) -> None:
         pay_kind = "fine"
     await state.update_data(pay_amount=amount, pay_kind=pay_kind)
 
-    now = datetime.utcnow()
+    now = now_msk()
     month, year = _parse_payment_month(text, now.month, now.year)
     if any(token in text.lower() for token in ("для", "за", "месяц", "month", "шин")) or "".join(re.findall(r"\d+", text)):
         await state.update_data(pay_month=month, pay_year=year)
@@ -168,7 +169,7 @@ async def member_pay_month(message: Message, state: FSMContext) -> None:
     if message.text is None:
         return
     text = message.text.strip()
-    now = datetime.utcnow()
+    now = now_msk()
     month, year = _parse_payment_month(text, now.month, now.year)
 
     if month < 1 or month > 12:
@@ -236,7 +237,10 @@ async def member_pay_comment(message: Message, state: FSMContext) -> None:
         await state.update_data(pay_comment=message.text.strip())
 
     # In aiogram 3.x, get bot from message via message.bot (works in message handlers)
-    await _pay_finalize(message.from_user.id, message.bot, state)
+    # message.from_user can be None (e.g. messages sent on behalf of a channel),
+    # fall back to chat id in that case to avoid attribute access on None.
+    user_id = message.from_user.id if message.from_user is not None else message.chat.id
+    await _pay_finalize(user_id, message.bot, state)
 
 
 async def _pay_finalize(user_id: int, bot, state: FSMContext) -> None:
@@ -290,7 +294,7 @@ async def _pay_finalize(user_id: int, bot, state: FSMContext) -> None:
 
         _MONTHS_RU = ["января","февраля","марта","апреля","мая","июня",
                        "июля","августа","сентября","октября","ноября","декабря"]
-        pay_dt = datetime.utcnow().date()
+        pay_dt = today_msk()
         pay_date_str = f"{pay_dt.day} {_MONTHS_RU[pay_dt.month - 1]} {pay_dt.year} года"
 
         # Build detailed payer info: Name (@username) — Role
@@ -380,11 +384,12 @@ async def member_pay_fine(callback: CallbackQuery, state: FSMContext) -> None:
             return
 
         # Save fine_id and payment data to state, then redirect to receipt/comment flow
+        now = now_msk()
         await state.update_data(
             pay_kind="fine",
             pay_amount=amount,
-            pay_month=datetime.utcnow().month,
-            pay_year=datetime.utcnow().year,
+            pay_month=now.month,
+            pay_year=now.year,
             pay_fine_id=fine.id,
         )
         await state.set_state(PaymentStates.waiting_receipt)
