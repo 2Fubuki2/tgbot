@@ -32,6 +32,7 @@ from src.presentation.keyboards.common import (
     admin_users_list_keyboard,
     back_keyboard,
     build_kb,
+    cancel_keyboard,
     confirm_cancel_keyboard,
     expense_categories_keyboard,
     expense_edit_keyboard,
@@ -1585,89 +1586,45 @@ async def admin_broadcast(callback: CallbackQuery, state: FSMContext) -> None:
 
 @router.message(BroadcastStates.waiting_text)
 async def admin_broadcast_message(message: Message, state: FSMContext) -> None:
-    """Broadcast the message to all active users."""
-    from aiogram.filters import Command
+    """Broadcast the message to all active users with rate limiting."""
+    import asyncio
+
     text = message.text or message.caption or ""
     if text.strip().lower() in ("отмена", "cancel", "/cancel"):
         await state.clear()
         await message.answer("❌ Рассылка отменена.")
         return
 
-    async for session in get_session():
-        user_repo = UserRepository(session)
-        members = await user_repo.list_active()
-        bot = message.bot
-
-        sent = 0
-        failed = 0
-        for member in members:
-            try:
-                await bot.send_message(member.telegram_id, text)
-                sent += 1
-            except Exception:
-                failed += 1
-                logger.exception("Broadcast failed for member %s", member.telegram_id)
-
-        await state.clear()
-        summary = f"✅ Рассылка завершена.\nОтправлено: {sent}\nОшибок: {failed}"
-        if failed:
-            await message.answer(summary, parse_mode="HTML")
-        kb = main_menu_keyboard(UserRole.ADMIN)
-        await message.answer("🏠 Главное меню", reply_markup=kb)
-
-
-# ─── Админ: рассылка ───────────────────────────
-
-@router.callback_query(F.data == "admin_broadcast")
-async def admin_broadcast(callback: CallbackQuery, state: FSMContext) -> None:
-    """Start broadcast FSM."""
-    if not await require_role(callback, UserRole.ADMIN):
-        return
-    await state.set_state(BroadcastStates.waiting_text)
-    await safe_edit(
-        callback,
-        "📣 <b>Рассылка</b>\n\n"
-        "Введите текст сообщения (будет отправлено всем активным участникам):\n\n"
-        "Отправьте отмену словом «отмена».",
-        reply_markup=cancel_keyboard(),
-    )
-    await callback.answer()
-
-
-@router.message(BroadcastStates.waiting_text)
-async def admin_broadcast_message(message: Message, state: FSMContext) -> None:
-    """Broadcast the message to all active users."""
-    from aiogram.filters import Command
-    text = message.text or message.caption or ""
-    if text.strip().lower() in ("отмена", "cancel", "/cancel"):
-        await state.clear()
-        await message.answer("❌ Рассылка отменена.")
-        return
+    await message.answer("⏳ Рассылка началась…")
 
     async for session in get_session():
         user_repo = UserRepository(session)
         members = await user_repo.list_active()
         bot = message.bot
 
+        total = len(members)
         sent = 0
         failed = 0
-        for member in members:
+        failed_ids = []
+
+        for i, member in enumerate(members, 1):
             try:
                 await bot.send_message(member.telegram_id, text)
                 sent += 1
             except Exception:
                 failed += 1
+                failed_ids.append(member.telegram_id)
                 logger.exception("Broadcast failed for member %s", member.telegram_id)
 
-        await state.clear()
-        summary = f"✅ Рассылка завершена.\nОтправлено: {sent}\nОшибок: {failed}"
-        if failed:
-            await message.answer(summary, parse_mode="HTML")
-            kb = main_menu_keyboard(UserRole.ADMIN)
-            await message.answer("🏠 Главное меню", reply_markup=kb)
-            return
+            # Rate limit: 0.5s between messages to avoid Telegram flood control
+            if i < total:
+                await asyncio.sleep(0.5)
 
+        await state.clear()
+        summary = f"✅ Рассылка завершена.\nОтправлено: {sent}/{total}\nОшибок: {failed}"
         await message.answer(summary, parse_mode="HTML")
+        if failed_ids:
+            logger.warning("Broadcast: %d failures for user ids: %s", failed, failed_ids)
         kb = main_menu_keyboard(UserRole.ADMIN)
         await message.answer("🏠 Главное меню", reply_markup=kb)
 
