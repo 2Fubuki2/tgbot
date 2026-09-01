@@ -8,24 +8,51 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.types import BotCommand, CallbackQuery, ErrorEvent, Message
 
-# Monkey-patch FilterObject.call to debug Python 3.13 TypeError
+# Monkey-patch FilterObject.call to debug and workaround Python 3.13 TypeError
 import sys as _sys
 print(f"[DEBUG] Applying FilterObject.call patch (Python {_sys.version_info.major}.{_sys.version_info.minor})", flush=True)
 from aiogram.dispatcher.event.handler import FilterObject
+from functools import partial as _partial
 _original_filter_call = FilterObject.call
 
 async def _debug_filter_call(self, *args, **kwargs):
     callback = self.callback
     print(f"[DEBUG] FilterObject.call: callback={callback!r} type={type(callback).__name__} callable={callable(callback)}", flush=True)
+
+    # Workaround for Python 3.13: wrap non-callable callbacks
     if not callable(callback):
-        print(f"[DEBUG] FilterObject.call: NON-CALLABLE CALLBACK! type={type(callback).__name__} value={callback!r}", flush=True)
-        if hasattr(callback, "__call__"):
-            print(f"[DEBUG] Has __call__: {callback.__call__!r}", flush=True)
+        print(f"[DEBUG] FilterObject.call: NON-CALLABLE CALLBACK! Wrapping...", flush=True)
+        # Try to extract the underlying function if it's a bound method
         if hasattr(callback, "__func__"):
-            print(f"[DEBUG] __func__: {callback.__func__!r}", flush=True)
-        if hasattr(callback, "__self__"):
-            print(f"[DEBUG] __self__: {callback.__self__!r}", flush=True)
-    return await _original_filter_call(self, *args, **kwargs)
+            callback = callback.__func__
+            print(f"[DEBUG] Extracted __func__: {callback!r}", flush=True)
+        elif hasattr(callback, "__call__"):
+            callback = callback.__call__
+            print(f"[DEBUG] Extracted __call__: {callback!r}", flush=True)
+        else:
+            # Last resort: create a wrapper that tries to call the original
+            original_callback = callback
+            async def _wrapper(*a, **k):
+                try:
+                    return await original_callback(*a, **k)
+                except Exception as e:
+                    print(f"[DEBUG] Wrapper error: {e}", flush=True)
+                    raise
+            callback = _wrapper
+            print(f"[DEBUG] Created wrapper: {callback!r}", flush=True)
+
+    # Create partial with the (possibly wrapped) callback
+    try:
+        wrapped = _partial(callback, *args, **self._prepare_kwargs(kwargs))
+    except TypeError as e:
+        print(f"[DEBUG] partial() failed: {e}", flush=True)
+        print(f"[DEBUG] callback type: {type(callback)}, repr: {callback!r}", flush=True)
+        raise
+
+    if self.awaitable:
+        return await wrapped()
+    import asyncio
+    return await asyncio.to_thread(wrapped)
 
 FilterObject.call = _debug_filter_call
 print(f"[DEBUG] FilterObject.call patch applied successfully", flush=True)
