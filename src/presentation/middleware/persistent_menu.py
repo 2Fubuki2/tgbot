@@ -150,27 +150,18 @@ class PersistentMenuMiddleware(BaseMiddleware):
         # Получаем бота из data
         bot: Bot = cast(Bot, data["bot"])
 
-        # Отправляем клавиатуру без текста — Telegram покажет её под полем ввода
+        # Отправляем клавиатуру — Telegram покажет её под полем ввода
+        # ReplyKeyboardMarkup нельзя редактировать через edit_reply_markup,
+        # поэтому всегда отправляем новое сообщение.
         try:
-            if isinstance(event, Message):
+            if isinstance(event, (Message, CallbackQuery)):
                 await bot.send_message(
                     chat_id=chat_id,
-                    text=" ",
+                    text="​",
                     reply_markup=kb,
                 )
-                logger.info("PersistentMenu: sent kb for msg user=%s chat=%s role=%s",
+                logger.info("PersistentMenu: sent kb user=%s chat=%s role=%s",
                             user_id, chat_id, role.name)
-            elif isinstance(event, CallbackQuery) and event.message:
-                try:
-                    await event.message.edit_reply_markup(reply_markup=kb)
-                    logger.info("PersistentMenu: edited kb for cb user=%s", user_id)
-                except Exception:
-                    await bot.send_message(
-                        chat_id=chat_id,
-                        text=" ",
-                        reply_markup=kb,
-                    )
-                    logger.info("PersistentMenu: sent kb (fallback) for cb user=%s", user_id)
         except Exception:
             logger.exception("Failed to send persistent menu for user %s", user_id)
 
