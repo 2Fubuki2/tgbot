@@ -88,7 +88,7 @@ def test_pdf_multiple_pages():
     data = buf.getvalue()
     assert data.startswith(b"%PDF")
     # PageBreak is used; verify there are multiple sections
-    assert b"Участники" in data or b"Participants" in data or b"%PDF" in data[:4]
+    assert b"Participants" in data or b"%PDF" in data[:4]
 
 
 # ─── Export structure tests ────────────────────────────────────────────────

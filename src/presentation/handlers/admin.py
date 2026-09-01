@@ -1383,8 +1383,7 @@ async def _show_admin_log_page(callback: CallbackQuery, page: int) -> None:
 
         await safe_edit(
             callback,
-            "
-".join(lines).strip(),
+            "\r\n".join(lines).strip(),
             reply_markup=build_kb(kb_rows),
         )
 
@@ -1532,8 +1531,7 @@ async def admin_export(callback: CallbackQuery) -> None:
         for e in expenses:
             lines_csv.append(f'{e.id},{e.amount},"{e.category.value}","{e.comment or ""}",{e.expense_date.isoformat() if e.expense_date else ""}')
 
-        csv_payload = "
-".join(lines_csv).encode("utf-8")
+        csv_payload = "\r\n".join(lines_csv).encode("utf-8")
         await callback.message.send_document(
             BufferedInputFile(io.BytesIO(csv_payload).getvalue(), filename="treasury_export.csv"),
             caption="📊 Экспорт данных клуба (CSV для Excel)",
