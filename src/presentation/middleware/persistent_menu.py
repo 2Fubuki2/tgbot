@@ -121,9 +121,6 @@ class PersistentMenuMiddleware(BaseMiddleware):
         user_id: int | None = None
         chat_id: int | None = None
         if isinstance(event, Message):
-            # Пропускаем команды
-            if event.text and event.text.startswith("/"):
-                return result
             user_id = event.from_user.id if event.from_user else None
             chat_id = event.chat.id
         elif isinstance(event, CallbackQuery):
@@ -157,7 +154,7 @@ class PersistentMenuMiddleware(BaseMiddleware):
             if isinstance(event, (Message, CallbackQuery)):
                 await bot.send_message(
                     chat_id=chat_id,
-                    text="​",
+                    text=".",
                     reply_markup=kb,
                 )
                 logger.info("PersistentMenu: sent kb user=%s chat=%s role=%s",
