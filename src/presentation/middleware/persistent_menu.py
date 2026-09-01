@@ -1,11 +1,7 @@
-"""PostMiddleware: injects persistent ReplyKeyboard into bot messages.
+"""PostMiddleware: injects persistent ReplyKeyboard into bot responses.
 
-Telegram не поддерживает нативную persistent-панель кнопок под полем ввода
-для regular bots. ReplyKeyboardMarkup с is_persistent=True — ближайший аналог:
-кнопки показываются под полем ввода и сохраняются между сообщениями.
-
-Подход: middleware внедряет reply_markup в каждое сообщение бота, которое
-отправляется пользователю (через answer/reply/edit_text).
+Подход: middleware перехватывает ответ бота и добавляет reply_markup,
+чтобы кнопки отображались под полем ввода пользователя.
 """
 
 from __future__ import annotations
@@ -113,7 +109,7 @@ def _build_reply_kb(role: UserRole, nav_history: list[str]) -> ReplyKeyboardMark
     if len(nav_history) > 1 and current != "main_menu":
         flat_buttons.append(("⬅️ Назад", "back"))
 
-    # Убираем дубликаты по тексту, сохраняя порядок
+    # Убираем дубликаты по тексту
     seen: set[str] = set()
     deduped: list[tuple[str, str]] = []
     for b in flat_buttons:
@@ -138,13 +134,13 @@ def _build_reply_kb(role: UserRole, nav_history: list[str]) -> ReplyKeyboardMark
 
 
 class PersistentMenuMiddleware(BaseMiddleware):
-    """PostMiddleware: injects persistent ReplyKeyboard into bot messages.
+    """PostMiddleware: injects persistent ReplyKeyboard into bot responses.
 
-    Работает так:
-    1. Запускает handler (обработка события)
-    2. Проверяет FSM-состояние — если пользователь вводит данные, выходим
-    3. Собирает reply-клавиатуру по роли и навигации
-    4. Внедряет reply_markup в ответ бота
+    Алгоритм:
+    1. Запускает handler
+    2. Проверяет FSM — если ввод данных, выходим
+    3. Собирает reply-клавиатуру
+    4. Отправляет reply_markup как ответ на сообщение пользователя
     """
 
     async def __call__(
@@ -153,19 +149,16 @@ class PersistentMenuMiddleware(BaseMiddleware):
         event: TelegramObject,
         data: Dict[str, Any],
     ) -> Any:
-        # Сначала даём handler'у обработать событие
         result = await handler(event, data)
 
         state = data.get("state")
         if _is_input_state(state):
-            # Пользователь вводит данные — скрываем панель
             return result
 
-        # Определяем user_id
         user_id: int | None = None
         if isinstance(event, Message):
             if event.text and event.text.startswith("/"):
-                return result  # команды — не показываем
+                return result
             user_id = event.from_user.id if event.from_user else event.chat.id
         elif isinstance(event, CallbackQuery):
             user_id = event.from_user.id
@@ -175,7 +168,6 @@ class PersistentMenuMiddleware(BaseMiddleware):
 
         nav_history = get_nav_history(user_id)
 
-        # Получаем роль
         role: UserRole = UserRole.MEMBER
         async for session in get_session():
             repo = UserRepository(session)
@@ -186,17 +178,15 @@ class PersistentMenuMiddleware(BaseMiddleware):
 
         kb = _build_reply_kb(role, nav_history)
 
-        # Внедряем reply_markup
         try:
             if isinstance(event, Message):
-                # Для Message — answer добавляет reply_markup к ответу
+                # Отправляем reply_markup как ответ на сообщение пользователя
                 await event.answer(reply_markup=kb)
             elif isinstance(event, CallbackQuery) and event.message:
-                # Для CallbackQuery — редактируем сообщение бота, добавляя reply_markup
+                # Для callback — редактируем сообщение бота, добавляя reply_markup
                 try:
                     await event.message.edit_reply_markup(reply_markup=kb)
                 except Exception:
-                    # Если не получилось редактировать — отправляем новое сообщение с reply_markup
                     await event.answer(reply_markup=kb)
         except Exception:
             logger.exception("Failed to inject persistent menu for user %s", user_id)
