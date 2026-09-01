@@ -178,16 +178,23 @@ class PersistentMenuMiddleware(BaseMiddleware):
 
         kb = _build_reply_kb(role, nav_history)
 
+        logger.info("PersistentMenu: user=%s role=%s nav=%s kb_rows=%s",
+                     user_id, role.name, nav_history,
+                     [row for row in kb.keyboard])
+
         try:
             if isinstance(event, Message):
                 # Отправляем reply_markup как ответ на сообщение пользователя
                 await event.answer(reply_markup=kb)
+                logger.info("PersistentMenu: sent reply_kb for message user=%s", user_id)
             elif isinstance(event, CallbackQuery) and event.message:
                 # Для callback — редактируем сообщение бота, добавляя reply_markup
                 try:
                     await event.message.edit_reply_markup(reply_markup=kb)
+                    logger.info("PersistentMenu: edited reply_kb for callback user=%s", user_id)
                 except Exception:
                     await event.answer(reply_markup=kb)
+                    logger.info("PersistentMenu: sent reply_kb (fallback) for callback user=%s", user_id)
         except Exception:
             logger.exception("Failed to inject persistent menu for user %s", user_id)
 
