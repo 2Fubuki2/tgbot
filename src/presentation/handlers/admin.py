@@ -1560,8 +1560,10 @@ async def admin_export(callback: CallbackQuery) -> None:
 
     await callback.answer()
     # Return to main menu after export completes
+    user = None
     async for session in get_session():
         user = await UserRepository(session).get_by_telegram_id(callback.from_user.id)
+        break
     kb = main_menu_keyboard(user.role if user else UserRole.MEMBER)
     await callback.message.answer("🏠 Главное меню", reply_markup=kb)
 

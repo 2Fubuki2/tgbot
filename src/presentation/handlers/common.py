@@ -139,7 +139,6 @@ async def cmd_help(message: Message) -> None:
 async def callback_main_menu(callback: CallbackQuery) -> None:
     """Return to main menu."""
     async for session in get_session():
-        from src.infrastructure.repositories.user_repository import UserRepository
         repo = UserRepository(session)
         user = await repo.get_by_telegram_id(callback.from_user.id)
 
@@ -231,19 +230,27 @@ async def callback_cancel_action(callback: CallbackQuery, state: FSMContext) -> 
 @router.callback_query(F.data == "back")
 async def callback_back(callback: CallbackQuery) -> None:
     """Generic back — navigate to previous screen or main menu."""
-    from src.presentation.middleware.navigation import pop_nav
+    from src.presentation.middleware.navigation import push_nav, pop_nav
     from src.presentation.handlers.admin import (
         admin_treasury, admin_users, admin_user_list, admin_settings,
         admin_stats, admin_log, admin_export, expense_menu, expense_list,
+        expense_add_start, expense_view,
     )
     from src.presentation.handlers.treasurer import (
         list_pending_payments, list_members, show_stats, send_reminders,
         member_account, member_payments, member_fines, member_fees, member_details,
-        member_fees_for_user,
+        member_fees_for_user, treasurer_timeline, timeline_user, timeline_item,
     )
     from src.presentation.handlers.fines import treasurer_fines
+    from src.presentation.handlers.ledger_edit import (
+        ledger_edit_payment, ledger_edit_fine, ledger_edit_fee,
+    )
 
     previous = pop_nav(callback.from_user.id)
+
+    # Re-push previous screen so middleware doesn't duplicate it when handler runs
+    from src.presentation.middleware.navigation import push_nav
+    push_nav(callback.from_user.id, previous)
 
     # Map callback_data to handler functions
     handlers = {
@@ -273,9 +280,27 @@ async def callback_back(callback: CallbackQuery) -> None:
         "member_details": member_details,
     }
 
-    handler = handlers.get(previous)
+    # Handle keyed handlers (need extra args from callback data)
+    key = previous
+    handler = handlers.get(key)
     if handler:
         await handler(callback)
+    elif key.startswith("ledger_edit_payment:"):
+        await ledger_edit_payment(callback, FSMContext(None, None))
+    elif key.startswith("ledger_edit_fine:"):
+        await ledger_edit_fine(callback, FSMContext(None, None))
+    elif key.startswith("ledger_edit_fee:"):
+        await ledger_edit_fee(callback, FSMContext(None, None))
+    elif key == "expense_add":
+        await expense_add_start(callback, FSMContext(None, None))
+    elif key.startswith("expense_view:"):
+        await expense_view(callback)
+    elif key == "treasurer_timeline":
+        await treasurer_timeline(callback)
+    elif key.startswith("timeline_user:"):
+        await timeline_user(callback)
+    elif key.startswith("timeline_item:"):
+        await timeline_item(callback)
     else:
         await callback_main_menu(callback)
 

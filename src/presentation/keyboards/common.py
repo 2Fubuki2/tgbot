@@ -306,14 +306,31 @@ def fine_allocation_keyboard(payment_id: int, fines: list) -> InlineKeyboardMark
 
 
 # ─── Хронология ──────────────────────────────────────
-def timeline_user_select_keyboard(users: list[tuple[int, str]]) -> InlineKeyboardMarkup:
+def timeline_user_select_keyboard(users: list[tuple[int, str]], page: int = 0) -> InlineKeyboardMarkup:
     """Paginated member selector for timeline."""
-    builder = InlineKeyboardBuilder()
     per_page = 8
-    for user_id, name in users[:per_page]:
-        builder.row(InlineKeyboardButton(text=name, callback_data=f"timeline_user:{user_id}"))
-    builder.row(InlineKeyboardButton(text=MAIN_MENU_BTN[0], callback_data=MAIN_MENU_BTN[1]))
-    return builder.as_markup()
+    total_pages = (len(users) + per_page - 1) // per_page if users else 1
+    start = page * per_page
+    end = start + per_page
+    page_users = users[start:end]
+
+    rows: list[list[tuple[str, str]]] = []
+    for user_id, name in page_users:
+        rows.append((name, f"timeline_user:{user_id}"))
+
+    # Pagination buttons
+    nav_parts = []
+    if page > 0:
+        nav_parts.append(("⬅️ Назад", f"timeline_page:{page - 1}"))
+    if page < total_pages - 1:
+        nav_parts.append(("Далее ➡️", f"timeline_page:{page + 1}"))
+    if nav_parts:
+        rows.append(nav_parts[0])
+        if len(nav_parts) > 1:
+            rows.append(nav_parts[1])
+    rows.append((MAIN_MENU_BTN[0], MAIN_MENU_BTN[1]))
+
+    return build_kb(rows)
 
 
 def timeline_item_keyboard(user_id: int) -> InlineKeyboardMarkup:

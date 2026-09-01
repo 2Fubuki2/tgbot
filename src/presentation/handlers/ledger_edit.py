@@ -48,6 +48,7 @@ from src.infrastructure.repositories.audit_repository import AuditLogRepository
 from src.infrastructure.repositories.fee_repository import FeeRepository
 from src.infrastructure.repositories.fine_repository import FineRepository
 from src.infrastructure.repositories.payment_repository import PaymentRepository
+from src.infrastructure.repositories.settings_repository import ClubSettingsRepository
 from src.infrastructure.repositories.user_repository import UserRepository
 from src.infrastructure.timezone import now_msk
 from src.presentation.keyboards.common import back_keyboard, build_kb, confirm_cancel_keyboard
@@ -60,9 +61,10 @@ logger = logging.getLogger(__name__)
 # ─── Пересчёт баланса пользователя из истории ────────────────────────────
 
 async def _recalculate_balance(session, user_id: int) -> Decimal:
-    """Пересчитать balance_credit пользователя из всех подтверждённых fee-платежей и оплаченных взносов."""
+    """Пересчитать balance_credit пользователя из всех подтверждённых fee-платежей, оплаченных взносов и поправки кассы."""
     pay_repo = PaymentRepository(session)
     fee_repo = FeeRepository(session)
+    settings_repo = ClubSettingsRepository(session)
 
     user_payments = await pay_repo.list_by_user(user_id)
     user_fees = await fee_repo.list_by_user(user_id)
@@ -77,6 +79,12 @@ async def _recalculate_balance(session, user_id: int) -> Decimal:
             balance -= f.amount
         elif f.paid_amount > 0:
             balance -= f.paid_amount
+
+    try:
+        adjustment = await settings_repo.get_treasury_adjustment()
+        balance += adjustment
+    except Exception:
+        pass
 
     return max(balance, Decimal("0"))
 

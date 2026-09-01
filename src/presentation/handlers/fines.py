@@ -16,6 +16,7 @@ from src.infrastructure.database.session import get_session
 from src.infrastructure.repositories.audit_repository import AuditLogRepository
 from src.infrastructure.repositories.fine_repository import FineRepository
 from src.infrastructure.repositories.user_repository import UserRepository
+from src.infrastructure.repositories.settings_repository import ClubSettingsRepository
 from src.presentation.keyboards.common import back_keyboard, build_kb, confirm_cancel_keyboard, main_menu_keyboard
 from src.presentation.handlers.common import callback_main_menu
 from src.infrastructure.timezone import now_msk
@@ -112,6 +113,8 @@ async def _fine_finalize(callback, state: FSMContext) -> None:
         user_repo = UserRepository(session)
         fine_repo = FineRepository(session)
         audit_repo = AuditLogRepository(session)
+        settings_repo = ClubSettingsRepository(session)
+        payment_details = await settings_repo.get_payment_details()
 
         issuer = await user_repo.get_by_telegram_id(callback.from_user.id)
         if not issuer:
@@ -157,7 +160,8 @@ async def _fine_finalize(callback, state: FSMContext) -> None:
                     user.telegram_id,
                     f"⚠️ Вам начислен штраф!\n"
                     f"💰 Сумма: <b>{data['fine_amount']:,.2f}₽</b>\n"
-                    f"📌 Причина: {data['fine_reason']}",
+                    f"📌 Причина: {data['fine_reason']}\n\n"
+                    f"📋 <b>Реквизиты для оплаты:</b>\n{payment_details}",
                 )
         except Exception:
             logger.exception("Failed to notify user %s about fine", data["fine_user_id"])

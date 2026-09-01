@@ -100,7 +100,7 @@ async def member_account(callback: CallbackQuery) -> None:
         fees = await fee_repo.list_pending_by_user(user.id)
         fines = await fine_repo.list_active_by_user(user.id)
 
-        fees_total = sum((f.amount for f in fees), Decimal("0"))
+        fees_total = sum((f.remaining_amount for f in fees), Decimal("0"))
         fines_total = sum((f.remaining_amount for f in fines), Decimal("0"))
         total = fees_total + fines_total
 
@@ -148,6 +148,12 @@ async def member_payments(callback: CallbackQuery) -> None:
             return
 
         payments = await pay_repo.list_by_user(user.id)
+        fees = await fee_repo.list_by_user(user.id)
+
+        # Корреляция платежей с платежами по period
+        fee_by_period: dict[tuple[int, int], MonthlyFee] = {}
+        for f in fees:
+            fee_by_period[(f.month, f.year)] = f
 
         if not payments:
             text = "📭 У вас пока нет платежей."
@@ -161,10 +167,22 @@ async def member_payments(callback: CallbackQuery) -> None:
             }
                 icon = status_icon.get(p.status, "❓")
                 date_str = p.payment_date.strftime("%d.%m.%Y") if p.payment_date else f"{p.month:02d}/{p.year}"
-                lines.append(
-                    f"{icon} <b>{p.amount:,.2f}₽</b> {date_str}"
-                    f" — {_payment_status_ru(p.status)}"
-                )
+                fee = fee_by_period.get((p.month, p.year))
+                if fee and p.amount < fee.amount and p.status == PaymentStatus.CONFIRMED:
+                    lines.append(
+                        f"{icon} <b>{p.amount:,.2f}₽</b>/{fee.amount:,.2f}₽ "
+                        f"{date_str} — {_payment_status_ru(p.status)}"
+                    )
+                    lines.append(
+                        f"   📋 Частичное погашение · "
+                        f"взнос {fee.month:02d}/{fee.year}: "
+                        f"остаток <b>{fee.remaining_amount:,.2f}₽</b>"
+                    )
+                else:
+                    lines.append(
+                        f"{icon} <b>{p.amount:,.2f}₽</b> {date_str}"
+                        f" — {_payment_status_ru(p.status)}"
+                    )
             text = "\n".join(lines)
 
         await safe_edit(callback, text, reply_markup=back_keyboard())
@@ -185,6 +203,11 @@ async def member_payments_for_user(callback: CallbackQuery) -> None:
             return
 
         payments = await pay_repo.list_by_user(user.id)
+        fees = await fee_repo.list_by_user(user.id)
+
+        fee_by_period: dict[tuple[int, int], MonthlyFee] = {}
+        for f in fees:
+            fee_by_period[(f.month, f.year)] = f
 
         if not payments:
             text = f"📭 У пользователя <b>{user.full_name}</b> пока нет платежей."
@@ -198,10 +221,22 @@ async def member_payments_for_user(callback: CallbackQuery) -> None:
             }
                 icon = status_icon.get(p.status, "❓")
                 date_str = p.payment_date.strftime("%d.%m.%Y") if p.payment_date else f"{p.month:02d}/{p.year}"
-                lines.append(
-                    f"{icon} <b>{p.amount:,.2f}₽</b> {date_str}"
-                    f" — {_payment_status_ru(p.status)}"
-                )
+                fee = fee_by_period.get((p.month, p.year))
+                if fee and p.amount < fee.amount and p.status == PaymentStatus.CONFIRMED:
+                    lines.append(
+                        f"{icon} <b>{p.amount:,.2f}₽</b>/{fee.amount:,.2f}₽ "
+                        f"{date_str} — {_payment_status_ru(p.status)}"
+                    )
+                    lines.append(
+                        f"   📋 Частичное погашение · "
+                        f"взнос {fee.month:02d}/{fee.year}: "
+                        f"остаток <b>{fee.remaining_amount:,.2f}₽</b>"
+                    )
+                else:
+                    lines.append(
+                        f"{icon} <b>{p.amount:,.2f}₽</b> {date_str}"
+                        f" — {_payment_status_ru(p.status)}"
+                    )
             text = "\n".join(lines)
 
         await safe_edit(callback, text, reply_markup=back_keyboard())
@@ -263,9 +298,18 @@ async def member_fees(callback: CallbackQuery) -> None:
             lines = ["<b>Взносы:</b>\n"]
             for f in fees:
                 status_icon = "✅" if f.status == FeeStatus.PAID else "⏳"
-                lines.append(
-                    f"{status_icon} <b>{f.amount:,.2f}₽</b> {f.month:02d}/{f.year} — {f.status.value}"
-                )
+                remaining = f.remaining_amount
+                if f.paid_amount > 0:
+                    lines.append(
+                        f"{status_icon} <b>{f.amount:,.2f}₽</b> "
+                        f"({f.paid_amount:,.2f}₽) {f.month:02d}/{f.year} — "
+                        f"ост. <b>{remaining:,.2f}₽</b>"
+                    )
+                else:
+                    lines.append(
+                        f"{status_icon} <b>{f.amount:,.2f}₽</b> "
+                        f"{f.month:02d}/{f.year} — {f.status.value}"
+                    )
             text = "\n".join(lines)
 
         await safe_edit(callback, text, reply_markup=back_keyboard())
@@ -293,9 +337,18 @@ async def member_fees_for_user(callback: CallbackQuery) -> None:
             lines = [f"<b>Взносы {user.full_name}:</b>\n"]
             for f in fees:
                 status_icon = "✅" if f.status == FeeStatus.PAID else "⏳"
-                lines.append(
-                    f"{status_icon} <b>{f.amount:,.2f}₽</b> {f.month:02d}/{f.year} — {f.status.value}"
-                )
+                remaining = f.remaining_amount
+                if f.paid_amount > 0:
+                    lines.append(
+                        f"{status_icon} <b>{f.amount:,.2f}₽</b> "
+                        f"({f.paid_amount:,.2f}₽) {f.month:02d}/{f.year} — "
+                        f"ост. <b>{remaining:,.2f}₽</b>"
+                    )
+                else:
+                    lines.append(
+                        f"{status_icon} <b>{f.amount:,.2f}₽</b> "
+                        f"{f.month:02d}/{f.year} — {f.status.value}"
+                    )
             text = "\n".join(lines)
 
         await safe_edit(callback, text, reply_markup=back_keyboard())
@@ -613,6 +666,8 @@ async def _assess_fees_for_period(
                 },
             ))
 
+        payment_details = await settings_repo.get_payment_details()
+
         # Уведомить всех участников о начислении
         for member in members:
             existing = await fee_repo.get_by_user_month(member.id, month, year)
@@ -625,7 +680,8 @@ async def _assess_fees_for_period(
                     )
                     if comment:
                         notify_text += f"💬 {comment}\n"
-                    notify_text += f"\nОплатить можно через меню 💰 Мой бюджет → 📤 Я оплатил"
+                    notify_text += f"\n📋 <b>Реквизиты для оплаты:</b>\n{payment_details}\n\n"
+                    notify_text += f"Оплатить можно через меню 💰 Мой бюджет → 📤 Я оплатил"
                     await bot.send_message(member.telegram_id, notify_text)
                 except Exception:
                     logger.exception("Failed to notify member %s about fee assessment", member.telegram_id)
@@ -778,6 +834,7 @@ async def confirm_payment(callback: CallbackQuery) -> None:
         return
     payment_id = int((callback.data or "").split(":")[1])
     succeeded = False
+    affected_fee_ids: list[int] = []
     try:
         async for session in get_session():
             pay_repo = PaymentRepository(session)
@@ -840,7 +897,6 @@ async def confirm_payment(callback: CallbackQuery) -> None:
                     user_model.balance_credit = (user_model.balance_credit or Decimal('0')) + Decimal(payment.amount)
                     # Get unpaid fees sorted oldest first (FIFO)
                     all_fees = await fee_repo.list_pending_by_user(payment.user_id)
-                    affected_fee_ids = []
                     for fee in all_fees:
                         if user_model.balance_credit <= 0:
                             break
@@ -1055,7 +1111,7 @@ async def view_member(callback: CallbackQuery) -> None:
         fees = await fee_repo.list_pending_by_user(user_id)
         fines = await fine_repo.list_active_by_user(user_id)
 
-        fees_total = sum((f.amount for f in fees), Decimal("0"))
+        fees_total = sum((f.remaining_amount for f in fees), Decimal("0"))
         fines_total = sum((f.remaining_amount for f in fines), Decimal("0"))
 
         text = (
@@ -1096,7 +1152,7 @@ async def remind_user(callback: CallbackQuery) -> None:
 
         fees = await fee_repo.list_pending_by_user(user.id)
         fines = await fine_repo.list_active_by_user(user.id)
-        fees_total = sum((f.amount for f in fees), Decimal("0"))
+        fees_total = sum((f.remaining_amount for f in fees), Decimal("0"))
         fines_total = sum((f.amount for f in fines), Decimal("0"))
         total = fees_total + fines_total
 
@@ -1195,7 +1251,7 @@ async def send_reminders(callback: CallbackQuery) -> None:
             fees = await fee_repo.list_pending_by_user(member.id)
             fines = await fine_repo.list_active_by_user(member.id)
 
-            fees_total = sum((f.amount for f in fees), Decimal("0"))
+            fees_total = sum((f.remaining_amount for f in fees), Decimal("0"))
             fines_total = sum((f.remaining_amount for f in fines), Decimal("0"))
             total = fees_total + fines_total
 
@@ -1383,8 +1439,26 @@ async def treasurer_timeline(callback: CallbackQuery) -> None:
         await safe_edit(
             callback,
             "📅 <b>Хронология</b>\n\nВыберите участника для просмотра истории операций:",
-            reply_markup=timeline_user_select_keyboard(users),
+            reply_markup=timeline_user_select_keyboard(users, page=0),
         )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("timeline_page:"))
+async def timeline_page(callback: CallbackQuery) -> None:
+    """Paginate member selector for timeline."""
+    if not await require_treasurer_or_admin(callback):
+        return
+    page = int((callback.data or "").split(":")[1])
+    async for session in get_session():
+        user_repo = UserRepository(session)
+        members = await user_repo.list_active()
+        users = [(m.id, m.full_name) for m in members]
+    await safe_edit(
+        callback,
+        "📅 <b>Хронология</b>\n\nВыберите участника для просмотра истории операций:",
+        reply_markup=timeline_user_select_keyboard(users, page=page),
+    )
     await callback.answer()
 
 

@@ -104,7 +104,7 @@ async def require_treasurer_or_admin(callback: CallbackQuery) -> bool:
     async for session in get_session():
         repo = UserRepository(session)
         user = await repo.get_by_telegram_id(callback.from_user.id)
-        if user and (user.role == UserRole.TREASURER or user.role == UserRole.ADMIN):
+        if user and user.status == UserStatus.ACTIVE and (user.role == UserRole.TREASURER or user.role == UserRole.ADMIN):
             is_allowed = True
     if not is_allowed:
         await callback.answer("⛔ Нет доступа", show_alert=True)
