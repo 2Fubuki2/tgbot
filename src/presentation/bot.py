@@ -70,11 +70,14 @@ def create_dispatcher() -> Dispatcher:
     dp = Dispatcher()
 
     # Register middleware
-    from src.presentation.middleware import NavigationMiddleware, BotStatusMiddleware
+    from src.presentation.middleware import NavigationMiddleware, BotStatusMiddleware, PersistentMenuMiddleware
 
+    persistent_menu_middleware = PersistentMenuMiddleware()
     navigation_middleware = NavigationMiddleware()
     bot_status_middleware = BotStatusMiddleware()
 
+    # Order matters: persistent menu first, then bot status, then navigation
+    dp.message.middleware(persistent_menu_middleware)
     dp.message.middleware(bot_status_middleware)
     dp.callback_query.middleware(bot_status_middleware)
     dp.callback_query.middleware(navigation_middleware)

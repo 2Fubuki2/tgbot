@@ -349,6 +349,59 @@ _MONTH_SHORT = ["янв", "фев", "мар", "апр", "май", "июн",
                 "июл", "авг", "сен", "окт", "ноя", "дек"]
 
 
+def persistent_menu_keyboard(role, nav_history):
+    """Построить контекстную панель быстрых кнопок внизу экрана."""
+    from src.presentation.middleware.navigation import _nav_stack
+
+    current = nav_history[-1] if nav_history else "main_menu"
+
+    # Наборы кнопок по экранам
+    _SCREEN_BUTTONS = {
+        "main_menu": [],
+        "my_budget": [("🏠 Меню", "main_menu")],
+        "member_account": [("💰 Платежи", "member_payments"), ("⚠️ Штрафы", "member_fines")],
+        "member_payments": [("📋 Лицевой счёт", "member_account")],
+        "member_fines": [("💰 Платежи", "member_payments")],
+        "member_details": [],
+        "club_budget": [("🏠 Меню", "main_menu")],
+        "treasurer_pending": [("📋 Участники", "treasurer_members")],
+        "treasurer_members": [("⏳ Платежи", "treasurer_pending")],
+        "treasurer_fines": [("💸 Расходы", "treasurer_expenses")],
+        "treasurer_expenses": [("📋 Участники", "treasurer_members")],
+        "treasurer_timeline": [],
+        "admin_management": [],
+    }
+
+    quick = _SCREEN_BUTTONS.get(current, [])
+
+    # Кнопки по роли
+    role_buttons = []
+    if role in (UserRole.MEMBER,):
+        role_buttons = [("💰 Мой бюджет", "my_budget")]
+    elif role in (UserRole.TREASURER,):
+        role_buttons = [("🏠 Меню", "main_menu"), ("💰 Мой бюджет", "my_budget")]
+    elif role == UserRole.ADMIN:
+        role_buttons = [("🏠 Меню", "main_menu"), ("💰 Мой бюджет", "my_budget"),
+                         ("💼 Бюджет клуба", "club_budget")]
+
+    buttons = quick + role_buttons
+    # Не более 6 кнопок, по 3 в ряд
+    buttons = buttons[:6]
+
+    builder = InlineKeyboardBuilder()
+    for i in range(0, len(buttons), 3):
+        chunk = buttons[i:i + 3]
+        row = [InlineKeyboardButton(text=b[0], callback_data=b[1]) for b in chunk]
+        builder.row(*row)
+
+    # Кнопка «назад» если есть история
+    if len(nav_history) > 1 and current != "main_menu":
+        prev = nav_history[-2]
+        builder.row(InlineKeyboardButton(text="⬅️ Назад", callback_data=prev))
+
+    return builder.as_markup()
+
+
 def payment_month_keyboard(current_year: int, current_month: int) -> InlineKeyboardMarkup:
     """Inline keyboard with 12 months for payment flow. Shows current year with prev/next year buttons."""
     rows: list[list[tuple[str, str]]] = []
