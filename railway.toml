@@ -1,0 +1,7 @@
+[build]
+builder = "nixpacks"
+
+[deploy]
+startCommand = "gunicorn src.webhook_app:app -w2 -b0.0.0.0:8080"
+restartPolicyType = "on_failure"
+restartPolicyMaxRetries = 10
