@@ -66,6 +66,8 @@ def _is_input_state(state) -> bool:
     if state is None:
         return False
     state_name = state.state if hasattr(state, "state") else str(state)
+    if not isinstance(state_name, str):
+        return False
     return state_name in _INPUT_STATES or any(s in state_name for s in _INPUT_STATES)
 
 
