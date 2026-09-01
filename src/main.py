@@ -139,33 +139,8 @@ async def _daily_fee_assessment_task(bot) -> None:
                 break
 
 
-async def _setup_webhook(bot) -> str | None:
-    """Configure webhook if running on Railway/production. Returns webhook URL or None."""
-    # Try to get webhook domain from env or settings
-    domain = settings.webhook_domain or os.environ.get("RAILWAY_PUBLIC_DOMAIN", "")
-    if not domain:
-        logger.info("No webhook domain configured, using polling mode")
-        return None
-
-    webhook_url = f"https://{domain}{settings.webhook_path}"
-    try:
-        result = await bot.set_webhook(
-            url=webhook_url,
-            allowed_updates=["message", "callback_query"],
-        )
-        if result:
-            logger.info("Webhook set: %s", webhook_url)
-            return webhook_url
-        else:
-            logger.warning("Failed to set webhook, falling back to polling")
-            return None
-    except Exception as e:
-        logger.warning("Webhook setup failed: %s, using polling", e)
-        return None
-
-
 async def main() -> None:
-    """Start the bot in polling or webhook mode."""
+    """Start the bot in polling mode."""
     setup_logging()
     logger.info("Starting TreasuryBot...")
 
@@ -174,32 +149,20 @@ async def main() -> None:
     bot = create_bot()
     dp = create_dispatcher()
 
-    # Try webhook mode first, fall back to polling
-    webhook_url = await _setup_webhook(bot)
+    # Polling mode with extended backoff to handle Telegram conflicts
+    scheduler_task = asyncio.create_task(_daily_fee_assessment_task(bot))
+    logger.info("Daily fee assessment scheduler started")
 
-    if webhook_url:
-        logger.info("Running in webhook mode: %s", webhook_url)
-        # Import webhook app and run it
-        from src.webhook_app import app as webhook_app
-
-        import uvicorn
-
-        uvicorn.run(webhook_app, host="0.0.0.0", port=8000, log_level="info")
-    else:
-        # Polling mode
-        scheduler_task = asyncio.create_task(_daily_fee_assessment_task(bot))
-        logger.info("Daily fee assessment scheduler started")
-
+    try:
+        await dp.start_polling(bot, backoff_config=_POLLING_BACKOFF)
+    finally:
+        scheduler_task.cancel()
         try:
-            await dp.start_polling(bot, backoff_config=_POLLING_BACKOFF)
-        finally:
-            scheduler_task.cancel()
-            try:
-                await scheduler_task
-            except asyncio.CancelledError:
-                pass
-            await bot.session.close()
-            await engine.dispose()
+            await scheduler_task
+        except asyncio.CancelledError:
+            pass
+        await bot.session.close()
+        await engine.dispose()
 
 
 if __name__ == "__main__":
