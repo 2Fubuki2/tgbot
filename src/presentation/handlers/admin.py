@@ -43,7 +43,7 @@ from src.presentation.handlers.common import callback_main_menu
 from src.presentation.texts import (
     ACCESS_DENIED,
 )
-from src.presentation.utils import safe_edit, require_role
+from src.presentation.utils import FakeCallback, safe_edit, require_role
 from src.presentation.states import (
     AddUserStates,
     BroadcastStates,
@@ -952,14 +952,6 @@ async def expense_add_comment(message: Message, state: FSMContext) -> None:
         await state.update_data(expense_comment=None)
     else:
         await state.update_data(expense_comment=message.text.strip())
-
-    class FakeCallback:
-        def __init__(self, msg):
-            self.message = msg
-            self.from_user = message.from_user
-            self.bot = message.bot
-        async def answer(self):
-            pass
 
     await _expense_finalize(FakeCallback(message), state)
 

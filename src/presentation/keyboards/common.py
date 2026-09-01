@@ -77,6 +77,7 @@ def club_budget_keyboard() -> InlineKeyboardMarkup:
         [("💸 Расходы клуба", "treasurer_expenses")],
         [("📅 Хронология", "treasurer_timeline")],
         [("📬 Напоминания", "treasurer_remind")],
+        [("⏰ Просроченные", "treasurer_overdue")],
         [("📊 Статистика", "treasurer_stats")],
         [BACK_BTN],
     ])
@@ -337,3 +338,40 @@ def timeline_item_keyboard(user_id: int) -> InlineKeyboardMarkup:
     return build_kb([
         [BACK_BTN],
     ])
+
+
+# ─── Выбор месяца (для оплаты) ───────────────────
+_MONTH_NAMES = [
+    "январь", "февраль", "март", "апрель", "май", "июнь",
+    "июль", "август", "сентябрь", "октябрь", "ноябрь", "декабрь",
+]
+_MONTH_SHORT = ["янв", "фев", "мар", "апр", "май", "июн",
+                "июл", "авг", "сен", "окт", "ноя", "дек"]
+
+
+def payment_month_keyboard(current_year: int, current_month: int) -> InlineKeyboardMarkup:
+    """Inline keyboard with 12 months for payment flow. Shows current year with prev/next year buttons."""
+    rows: list[list[tuple[str, str]]] = []
+
+    # Year selector row
+    rows.append([
+        (f"⬅️ {current_year - 1}", f"pay_month_year:{current_year - 1}"),
+        (f"📅 {current_year}", "pay_month_current"),
+        (f"{current_year + 1} ➡️", f"pay_month_year:{current_year + 1}"),
+    ])
+
+    # 12 months in 4 rows of 3
+    for i in range(0, 12, 3):
+        row = []
+        for j in range(3):
+            idx = i + j
+            name = _MONTH_SHORT[idx]
+            mb = f"pay_month:{idx + 1}"
+            if idx + 1 == current_month:
+                row.append((f"🔹 {name}", mb))
+            else:
+                row.append((name, mb))
+        rows.append(row)
+
+    rows.append([("🔙 Назад", "back")])
+    return build_kb(rows)

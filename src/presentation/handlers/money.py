@@ -23,6 +23,7 @@ from src.presentation.keyboards.common import (
     confirm_cancel_keyboard,
     main_menu_keyboard,
     payment_action_keyboard,
+    payment_month_keyboard,
     payment_type_keyboard,
 )
 from src.presentation.handlers.common import callback_main_menu
@@ -157,10 +158,8 @@ async def member_pay_amount(message: Message, state: FSMContext) -> None:
 
     await state.set_state(PaymentStates.waiting_month)
     await message.answer(
-        f"За какой <b>месяц</b> платите?\n"
-        f"(например: {now.month})\n"
-        f"Или год.месяц (например: {now.year}.{now.month})\n"
-        f"Можно написать месяц текстом: июнь, september, 2025.06",
+        f"📅 За какой <b>месяц</b> платите?",
+        reply_markup=payment_month_keyboard(now.year, now.month),
     )
 
 
@@ -183,6 +182,53 @@ async def member_pay_month(message: Message, state: FSMContext) -> None:
         "Если фото нет — отправьте /skip:",
         reply_markup=confirm_cancel_keyboard("pay_skip_receipt", "back"),
     )
+
+
+@router.callback_query(F.data.startswith("pay_month:"))
+async def pay_month_click(callback: CallbackQuery, state: FSMContext) -> None:
+    """Handle month button click in payment flow."""
+    parts = (callback.data or "").split(":")
+    month = int(parts[1])
+    data = await state.get_data()
+    year = int(data.get("pay_year", now_msk().year))
+    await state.update_data(pay_month=month, pay_year=year)
+    await state.set_state(PaymentStates.waiting_receipt)
+    await safe_edit(
+        callback,
+        f"📸 Отправьте <b>фото чека</b> (или подтверждения перевода) за <b>{month:02d}.{year}</b>.\n"
+        f"Если фото нет — отправьте /skip:",
+        reply_markup=confirm_cancel_keyboard("pay_skip_receipt", "back"),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("pay_month_year:"))
+async def pay_month_year_click(callback: CallbackQuery, state: FSMContext) -> None:
+    """Handle year switch in month picker."""
+    year = int((callback.data or "").split(":")[1])
+    data = await state.get_data()
+    month = int(data.get("pay_month", now_msk().month))
+    await state.update_data(pay_year=year)
+    await safe_edit(
+        callback,
+        f"📅 За какой <b>месяц</b> платите?",
+        reply_markup=payment_month_keyboard(year, month),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "pay_month_current")
+async def pay_month_current_year(callback: CallbackQuery, state: FSMContext) -> None:
+    """Re-show keyboard for current year."""
+    data = await state.get_data()
+    year = int(data.get("pay_year", now_msk().year))
+    month = int(data.get("pay_month", now_msk().month))
+    await safe_edit(
+        callback,
+        f"📅 За какой <b>месяц</b> платите?",
+        reply_markup=payment_month_keyboard(year, month),
+    )
+    await callback.answer()
 
 
 @router.callback_query(F.data == "pay_skip_receipt")
@@ -339,12 +385,13 @@ async def _pay_finalize(user_id: int, bot, state: FSMContext) -> None:
                 logger.exception("Failed to notify treasurer/admin about payment #%s", created.id)
 
         await bot.send_message(user_id, "✅ Платёж отправлен на подтверждение!\nОжидайте, пока казначей его подтвердит.")
-    await state.clear()
-    # Return to main menu after payment flow completes
-    async for sess in get_session():
-        user = await UserRepository(sess).get_by_telegram_id(user_id)
+
+        # Return to main menu after payment flow completes
+        user = await UserRepository(session).get_by_telegram_id(user_id)
         kb = main_menu_keyboard(user.role if user else UserRole.MEMBER)
         await bot.send_message(user_id, "🏠 Главное меню", reply_markup=kb)
+
+    await state.clear()
 
 
 @router.callback_query(F.data.startswith("treasurer_pay:"))
@@ -401,4 +448,4 @@ async def member_pay_fine(callback: CallbackQuery, state: FSMContext) -> None:
             f"Если фото нет — отправьте /skip:",
             reply_markup=confirm_cancel_keyboard("pay_skip_receipt", "back"),
         )
-    await callback.answer()
+    return

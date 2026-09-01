@@ -16,29 +16,6 @@ from src.domain.value_objects.role import UserRole
 from src.domain.value_objects.fee_status import FeeStatus
 from src.domain.value_objects.fine_status import FineStatus
 
-
-# ─── Russian status labels for UI ─────────────────
-def _payment_status_ru(status: PaymentStatus) -> str:
-    return {
-        PaymentStatus.PENDING: "ожидает",
-        PaymentStatus.CONFIRMED: "подтверждён",
-        PaymentStatus.REJECTED: "отклонён",
-    }.get(status, status.value)
-
-
-def _fee_status_ru(status: FeeStatus) -> str:
-    return {
-        FeeStatus.PENDING: "ожидает",
-        FeeStatus.PAID: "оплачен",
-        FeeStatus.WAIVED: "списан",
-    }.get(status, status.value)
-
-
-def _fine_status_ru(status: FineStatus) -> str:
-    return {
-        FineStatus.ACTIVE: "активен",
-        FineStatus.CANCELLED: "оплачен",
-    }.get(status, status.value)
 from src.infrastructure.database.session import get_session
 from src.infrastructure.database.models.user import UserModel
 from src.infrastructure.database.models.monthly_fee import MonthlyFeeModel
@@ -74,8 +51,16 @@ from src.presentation.texts import (
     debt_reminder_text,
     stats_text,
 )
-from src.infrastructure.timezone import now_msk
-from src.presentation.utils import safe_edit, send_text_replacing_photo, require_role, require_treasurer_or_admin
+from src.infrastructure.timezone import now_msk, today_msk
+from src.presentation.utils import (
+    safe_edit,
+    send_text_replacing_photo,
+    require_role,
+    require_treasurer_or_admin,
+    payment_status_ru,
+    fee_status_ru,
+    fine_status_ru,
+)
 
 router = Router()
 
@@ -114,21 +99,39 @@ async def member_account(callback: CallbackQuery) -> None:
             else:
                 unpaid_months.append(label)
 
+        # Group months by year for display
+        paid_by_year: dict[int, list[str]] = {}
+        unpaid_by_year: dict[int, list[str]] = {}
+        for f in all_fees:
+            label = f"{f.month:02d}/{f.year}"
+            if f.status == FeeStatus.PAID:
+                paid_by_year.setdefault(f.year, []).append(label)
+            else:
+                unpaid_by_year.setdefault(f.year, []).append(label)
+
         text = (
-            f"📋 <b>Лицевой счёт</b>\n"
-            f"👤 {user.full_name}\n"
-            f"━━━━━━━━━━━━━━━━\n"
-            f"💰 Долг по взносам: <b>{fees_total:,.2f}₽</b>\n"
-            f"⚠️ Штрафы: <b>{fines_total:,.2f}₽</b>\n"
-            f"💳 <b>Всего к оплате: {total:,.2f}₽</b>\n"
-            f"🔄 Переплата: <b>{user.balance_credit:,.2f}₽</b>\n"
-            f"━━━━━━━━━━━━━━━━\n"
+            "╔══════════════════════╗\n"
+            "║  📋 <b>Лицевой счёт</b>          ║\n"
+            f"║  👤 {user.full_name:<18}║\n"
+            "╠══════════════════════╣\n"
+            f"║  💰 Взносы:      <b>{fees_total:>9,.2f}₽</b> ║\n"
+            f"║  ⚠️ Штрафы:      <b>{fines_total:>9,.2f}₽</b> ║\n"
+            f"║  💳 Итого:       <b>{total:>9,.2f}₽</b> ║\n"
+            f"║  🔄 Переплата:   <b>{user.balance_credit:>8,.2f}₽</b> ║\n"
+            "╚══════════════════════╝\n"
         )
 
-        if paid_months:
-            text += "✅ <b>Оплачено:</b> " + ", ".join(paid_months[:6]) + "\n"
-        if unpaid_months:
-            text += "❌ <b>Долг:</b> " + ", ".join(unpaid_months[:6])
+        # Display months grouped by year
+        all_years = sorted(set(list(paid_by_year.keys()) + list(unpaid_by_year.keys())), reverse=True)
+        for year in all_years:
+            paid_m = paid_by_year.get(year, [])
+            unpaid_m = unpaid_by_year.get(year, [])
+            if paid_m or unpaid_m:
+                text += f"\n📅 <b>{year}</b>\n"
+                if paid_m:
+                    text += "  ✅ " + ", ".join(paid_m) + "\n"
+                if unpaid_m:
+                    text += "  ⏳ " + ", ".join(unpaid_m) + "\n"
 
         await safe_edit(callback, text, reply_markup=back_keyboard())
 
@@ -155,17 +158,51 @@ async def member_payments(callback: CallbackQuery) -> None:
         for f in fees:
             fee_by_period[(f.month, f.year)] = f
 
-        if not payments:
-            text = "📭 У вас пока нет платежей."
-        else:
-            lines = ["<b>История платежей:</b>\n"]
-            for p in payments[:20]:
-                status_icon = {
-                PaymentStatus.PENDING: "⏳",
-                PaymentStatus.CONFIRMED: "✅",
-                PaymentStatus.REJECTED: "❌",
-            }
-                icon = status_icon.get(p.status, "❓")
+        paid_by_period: dict[tuple[int, int], Decimal] = {}
+        for p in payments:
+            if p.status == PaymentStatus.CONFIRMED:
+                key = (p.month, p.year)
+                paid_by_period[key] = paid_by_period.get(key, Decimal("0")) + p.amount
+
+        # Периоды с текущим долгом (отсортированы: новые сначала)
+        owed_periods = sorted(
+            [(m, y) for (m, y), f in fee_by_period.items() if f.remaining_amount > 0],
+            key=lambda x: (x[1], x[0]),
+            reverse=True,
+        )
+
+        # Group owed periods by year
+        years_order: dict[int, list[int]] = {}
+        for _, year in owed_periods:
+            years_order.setdefault(year, []).append(_)
+        sorted_years = sorted(years_order.keys(), reverse=True)
+
+        lines = ["<b>💰 Текущее состояние</b>\n"]
+        for year in sorted_years:
+            months = years_order[year]
+            lines.append(f"📅 <b>{year}</b>")
+            for month in months:
+                fee = fee_by_period[(month, year)]
+                paid = paid_by_period.get((month, year), Decimal("0"))
+                if fee.status == FeeStatus.PAID:
+                    lines.append(f"  ✅ {month:02d} — <b>{fee.amount:,.2f}₽</b> оплачен")
+                elif paid > 0:
+                    lines.append(
+                        f"  ⏳ {month:02d} — "
+                        f"<b>{paid:,.2f}₽</b> /{fee.amount:,.2f}₽, "
+                        f"остаток <b>{fee.remaining_amount:,.2f}₽</b>"
+                    )
+                else:
+                    lines.append(f"  ⏳ {month:02d} — <b>{fee.amount:,.2f}₽</b> ожидается")
+
+        # Подтверждённые/отклонённые платежи (дополнительно)
+        settled = [p for p in payments if p.status in (PaymentStatus.CONFIRMED, PaymentStatus.REJECTED)]
+        if settled:
+            lines.append("")
+            lines.append("📜 <b>История платежей</b>")
+            lines.append("━━━━━━━━━━━━━━━━")
+            for p in settled[:10]:
+                status_icon = "✅" if p.status == PaymentStatus.CONFIRMED else "❌"
                 date_str = p.payment_date.strftime("%d.%m.%Y") if p.payment_date else f"{p.month:02d}/{p.year}"
                 fee = fee_by_period.get((p.month, p.year))
                 if fee and p.amount < fee.amount and p.status == PaymentStatus.CONFIRMED:
@@ -209,17 +246,49 @@ async def member_payments_for_user(callback: CallbackQuery) -> None:
         for f in fees:
             fee_by_period[(f.month, f.year)] = f
 
-        if not payments:
-            text = f"📭 У пользователя <b>{user.full_name}</b> пока нет платежей."
-        else:
-            lines = [f"<b>История платежей {user.full_name}:</b>\n"]
-            for p in payments[:20]:
-                status_icon = {
-                PaymentStatus.PENDING: "⏳",
-                PaymentStatus.CONFIRMED: "✅",
-                PaymentStatus.REJECTED: "❌",
-            }
-                icon = status_icon.get(p.status, "❓")
+        paid_by_period: dict[tuple[int, int], Decimal] = {}
+        for p in payments:
+            if p.status == PaymentStatus.CONFIRMED:
+                key = (p.month, p.year)
+                paid_by_period[key] = paid_by_period.get(key, Decimal("0")) + p.amount
+
+        owed_periods = sorted(
+            [(m, y) for (m, y), f in fee_by_period.items() if f.remaining_amount > 0],
+            key=lambda x: (x[1], x[0]),
+            reverse=True,
+        )
+
+        # Group owed periods by year
+        years_order: dict[int, list[int]] = {}
+        for _, year in owed_periods:
+            years_order.setdefault(year, []).append(_)
+        sorted_years = sorted(years_order.keys(), reverse=True)
+
+        lines = [f"<b>💰 Текущее состояние {user.full_name}</b>\n"]
+        for year in sorted_years:
+            months = years_order[year]
+            lines.append(f"📅 <b>{year}</b>")
+            for month in months:
+                fee = fee_by_period[(month, year)]
+                paid = paid_by_period.get((month, year), Decimal("0"))
+                if fee.status == FeeStatus.PAID:
+                    lines.append(f"  ✅ {month:02d} — <b>{fee.amount:,.2f}₽</b> оплачен")
+                elif paid > 0:
+                    lines.append(
+                        f"  ⏳ {month:02d} — "
+                        f"<b>{paid:,.2f}₽</b> /{fee.amount:,.2f}₽, "
+                        f"остаток <b>{fee.remaining_amount:,.2f}₽</b>"
+                    )
+                else:
+                    lines.append(f"  ⏳ {month:02d} — <b>{fee.amount:,.2f}₽</b> ожидается")
+
+        settled = [p for p in payments if p.status in (PaymentStatus.CONFIRMED, PaymentStatus.REJECTED)]
+        if settled:
+            lines.append("")
+            lines.append("📜 <b>История платежей</b>")
+            lines.append("━━━━━━━━━━━━━━━━")
+            for p in settled[:10]:
+                status_icon = "✅" if p.status == PaymentStatus.CONFIRMED else "❌"
                 date_str = p.payment_date.strftime("%d.%m.%Y") if p.payment_date else f"{p.month:02d}/{p.year}"
                 fee = fee_by_period.get((p.month, p.year))
                 if fee and p.amount < fee.amount and p.status == PaymentStatus.CONFIRMED:
@@ -606,10 +675,6 @@ async def _assess_fees_for_period(
 
         # Check if already assessed for this period (unless forced)
         existing_fees = await fee_repo.list_by_month(month, year)
-<<<<<<< HEAD
-        if existing_fees:
-            text = f"ℹ️ Взносы за {month:02d}/{year} уже начислены ранее ({len(existing_fees)} участников)."
-=======
         if existing_fees and not force:
             # Allow re-assessment for manual trigger, just warn
             text = (
@@ -910,6 +975,10 @@ async def confirm_payment(callback: CallbackQuery) -> None:
                             if fee.paid_amount >= fee.amount:
                                 fee.status = FeeStatus.PAID
                                 fee.paid_at = now_msk()
+                            # Sync payment period with the fee it was applied to
+                            if payment.payment_type == "fee" and apply > 0:
+                                payment.month = fee.month
+                                payment.year = fee.year
                             await fee_repo.update(fee)
                             affected_fee_ids.append(fee.id)
 
@@ -1277,6 +1346,270 @@ async def send_reminders(callback: CallbackQuery) -> None:
             f"📬 Напоминания отправлены <b>{sent}</b> должникам.",
             reply_markup=back_keyboard(),
         )
+    await callback.answer()
+
+
+# ─── Казначей: просроченные платежи ─────────────
+
+@router.callback_query(F.data == "treasurer_overdue")
+async def show_overdue(callback: CallbackQuery) -> None:
+    """Show debts older than 15 days."""
+    if not await require_treasurer_or_admin(callback):
+        return
+    async for session in get_session():
+        user_repo = UserRepository(session)
+        fee_repo = FeeRepository(session)
+        fine_repo = FineRepository(session)
+
+        today = today_msk()
+        THRESHOLD_DAYS = 15
+
+        # Collect overdue fees
+        all_fees = await fee_repo.list_all_pending()
+        overdue_fees: list[tuple[MonthlyFee, int]] = []  # (fee, days_overdue)
+        for fee in all_fees:
+            if fee.remaining_amount <= 0:
+                continue
+            assessed = fee.assessed_at
+            if assessed.tzinfo is None:
+                assessed = assessed.replace(tzinfo=now_msk().tzinfo)
+            days = (today - assessed.date()).days
+            if days >= THRESHOLD_DAYS:
+                overdue_fees.append((fee, days))
+
+        # Collect overdue fines
+        all_fines = await fine_repo.list_active()
+        overdue_fines: list[tuple[Fine, int]] = []
+        for fine in all_fines:
+            if fine.remaining_amount <= 0:
+                continue
+            issued = fine.created_at
+            if issued.tzinfo is None:
+                issued = issued.replace(tzinfo=now_msk().tzinfo)
+            days = (today - issued.date()).days
+            if days >= THRESHOLD_DAYS:
+                overdue_fines.append((fine, days))
+
+        if not overdue_fees and not overdue_fines:
+            await safe_edit(
+                callback,
+                "✅ Просроченных платежей нет (все Debt младше 15 дней).",
+                reply_markup=back_keyboard(),
+            )
+            await callback.answer()
+            return
+
+        # Group by user
+        user_data: dict[int, dict] = {}
+        for fee, days in overdue_fees:
+            user_data.setdefault(fee.user_id, {"fees": [], "fines": [], "max_days": 0})
+            user_data[fee.user_id]["fees"].append((fee, days))
+            user_data[fee.user_id]["max_days"] = max(user_data[fee.user_id]["max_days"], days)
+        for fine, days in overdue_fines:
+            user_data.setdefault(fine.user_id, {"fees": [], "fines": [], "max_days": 0})
+            user_data[fine.user_id]["fines"].append((fine, days))
+            user_data[fine.user_id]["max_days"] = max(user_data[fine.user_id]["max_days"], days)
+
+        # Sort by max days descending
+        sorted_users = sorted(user_data.items(), key=lambda x: x[1]["max_days"], reverse=True)
+
+        if not sorted_users:
+            await safe_edit(
+                callback,
+                "✅ Просроченных платежей нет.",
+                reply_markup=back_keyboard(),
+            )
+            await callback.answer()
+            return
+
+        lines = [f"⏰ <b>Просроченные платежи</b> ({len(sorted_users)} участников)"]
+        lines.append(f"📌 Показаны долги старше <b>{THRESHOLD_DAYS}</b> дней\n")
+
+        for user_id, data in sorted_users:
+            user = await user_repo.get_by_id(user_id)
+            user_name = user.full_name if user else f"ID {user_id}"
+            total = sum(f.remaining_amount for f, _ in data["fees"]) + sum(f.remaining_amount for f, _ in data["fines"])
+
+            badge = "🔴" if data["max_days"] >= 30 else "🟠" if data["max_days"] >= 21 else "🟡"
+            lines.append(f"{badge} <b>{user_name}</b> — {data['max_days']}дн. просрочки")
+            lines.append(f"   💳 <b>{total:,.2f}₽</b>")
+
+            for fee, days in data["fees"]:
+                lines.append(f"   · {fee.month:02d}/{fee.year} — {days}дн.")
+            for fine, days in data["fines"]:
+                lines.append(f"   · ⚠️ {fine.reason[:30]}{'…' if len(fine.reason) > 30 else ''} — {days}дн.")
+            lines.append("")
+
+        text = "\n".join(lines)
+        kb_rows = [
+            [("📬 Отправить всем", "overdue_send_all")],
+        ]
+        for user_id, _ in sorted_users[:8]:
+            user = await user_repo.get_by_id(user_id)
+            uname = user.full_name if user else f"ID {user_id}"
+            kb_rows.append([(f"📬 Напомнить {uname}", f"overdue_remind:{user_id}")])
+        kb_rows.append([("🔙 Назад", "back")])
+
+        await safe_edit(callback, text, reply_markup=build_kb(kb_rows))
+    await callback.answer()
+
+
+@router.callback_query(F.data == "overdue_send_all")
+async def overdue_send_all(callback: CallbackQuery) -> None:
+    """Send reminders to all overdue debtors."""
+    if not await require_treasurer_or_admin(callback):
+        return
+    async for session in get_session():
+        user_repo = UserRepository(session)
+        fee_repo = FeeRepository(session)
+        fine_repo = FineRepository(session)
+        settings_repo = ClubSettingsRepository(session)
+
+        today = today_msk()
+        THRESHOLD_DAYS = 15
+
+        all_fees = await fee_repo.list_all_pending()
+        overdue_fees: list[tuple[MonthlyFee, int]] = []
+        for fee in all_fees:
+            if fee.remaining_amount <= 0:
+                continue
+            assessed = fee.assessed_at
+            if assessed.tzinfo is None:
+                assessed = assessed.replace(tzinfo=now_msk().tzinfo)
+            days = (today - assessed.date()).days
+            if days >= THRESHOLD_DAYS:
+                overdue_fees.append((fee, days))
+
+        all_fines = await fine_repo.list_active()
+        overdue_fines: list[tuple[Fine, int]] = []
+        for fine in all_fines:
+            if fine.remaining_amount <= 0:
+                continue
+            issued = fine.created_at
+            if issued.tzinfo is None:
+                issued = issued.replace(tzinfo=now_msk().tzinfo)
+            days = (today - issued.date()).days
+            if days >= THRESHOLD_DAYS:
+                overdue_fines.append((fine, days))
+
+        user_ids = {f.user_id for f, _ in overdue_fees} | {f.user_id for f, _ in overdue_fines}
+        payment_details = await settings_repo.get_payment_details()
+        sent = 0
+
+        for uid in user_ids:
+            user = await user_repo.get_by_id(uid)
+            if not user:
+                continue
+            fees = [f for f, _ in overdue_fees if f.user_id == uid]
+            fines = [f for f, _ in overdue_fines if f.user_id == uid]
+            fees_total = sum(f.remaining_amount for f in fees)
+            fines_total = sum(f.remaining_amount for f in fines)
+            total = fees_total + fines_total
+            if total <= 0:
+                continue
+
+            try:
+                await callback.bot.send_message(
+                    user.telegram_id,
+                    debt_reminder_text(
+                        f"{total:,.2f}₽",
+                        f"{fees_total:,.2f}₽",
+                        f"{fines_total:,.2f}₽",
+                        payment_details,
+                    ),
+                )
+                sent += 1
+            except Exception:
+                logger.exception("Failed to send overdue reminder to user %s", uid)
+
+        await safe_edit(
+            callback,
+            f"📬 Напоминания отправлены <b>{sent}</b> должникам со просрочкой >{THRESHOLD_DAYS} дней.",
+            reply_markup=back_keyboard(),
+        )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("overdue_remind:"))
+async def overdue_remind_user(callback: CallbackQuery) -> None:
+    """Send a reminder to a specific overdue user."""
+    if not await require_treasurer_or_admin(callback):
+        return
+    user_id = int((callback.data or "").split(":")[1])
+    async for session in get_session():
+        user_repo = UserRepository(session)
+        fee_repo = FeeRepository(session)
+        fine_repo = FineRepository(session)
+        settings_repo = ClubSettingsRepository(session)
+
+        user = await user_repo.get_by_id(user_id)
+        if not user:
+            await callback.answer("❌ Пользователь не найден")
+            return
+
+        fees = await fee_repo.list_pending_by_user(user.id)
+        fines = await fine_repo.list_active_by_user(user.id)
+
+        today = today_msk()
+        THRESHOLD_DAYS = 15
+
+        overdue_fees = []
+        for f in fees:
+            if f.remaining_amount <= 0:
+                continue
+            assessed = f.assessed_at
+            if assessed.tzinfo is None:
+                assessed = assessed.replace(tzinfo=now_msk().tzinfo)
+            days = (today - assessed.date()).days
+            if days >= THRESHOLD_DAYS:
+                overdue_fees.append((f, days))
+
+        overdue_fines = []
+        for f in fines:
+            if f.remaining_amount <= 0:
+                continue
+            issued = f.created_at
+            if issued.tzinfo is None:
+                issued = issued.replace(tzinfo=now_msk().tzinfo)
+            days = (today - issued.date()).days
+            if days >= THRESHOLD_DAYS:
+                overdue_fines.append((f, days))
+
+        fees_total = sum(f.remaining_amount for f, _ in overdue_fees)
+        fines_total = sum(f.remaining_amount for f, _ in overdue_fines)
+        total = fees_total + fines_total
+
+        if total <= 0:
+            await safe_edit(
+                callback,
+                f"✅ У {user.full_name} нет просроченных долгов (>{THRESHOLD_DAYS} дней).",
+                reply_markup=back_keyboard(),
+            )
+            await callback.answer()
+            return
+
+        payment_details = await settings_repo.get_payment_details()
+        try:
+            await callback.bot.send_message(
+                user.telegram_id,
+                debt_reminder_text(
+                    f"{total:,.2f}₽",
+                    f"{fees_total:,.2f}₽",
+                    f"{fines_total:,.2f}₽",
+                    payment_details,
+                ),
+            )
+            await safe_edit(
+                callback,
+                f"📬 Напоминание отправлено <b>{user.full_name}</b>.",
+                reply_markup=back_keyboard(),
+            )
+        except Exception:
+            await safe_edit(
+                callback,
+                f"⚠️ Не удалось отправить напоминание <b>{user.full_name}</b>.",
+                reply_markup=back_keyboard(),
+            )
     await callback.answer()
 
 

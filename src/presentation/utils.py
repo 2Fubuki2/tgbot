@@ -1,18 +1,90 @@
 from __future__ import annotations
 
 import logging
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 from aiogram.types import CallbackQuery, Message
 
+from src.domain.value_objects.fee_status import FeeStatus
+from src.domain.value_objects.fine_status import FineStatus
+from src.domain.value_objects.payment_status import PaymentStatus
 from src.domain.value_objects.role import UserRole
 from src.domain.value_objects.user_status import UserStatus
 from src.infrastructure.database.session import get_session
 from src.infrastructure.repositories.user_repository import UserRepository
 from src.presentation.texts import ACCESS_DENIED
 
+if TYPE_CHECKING:
+    from src.domain.entities.fine import Fine
+    from src.domain.entities.monthly_fee import MonthlyFee
+    from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = logging.getLogger(__name__)
+
+
+# ─── Status helpers (shared across handlers) ───────────────────
+
+def payment_status_ru(status: PaymentStatus) -> str:
+    return {
+        PaymentStatus.PENDING: "ожидает",
+        PaymentStatus.CONFIRMED: "подтверждён",
+        PaymentStatus.REJECTED: "отклонён",
+    }.get(status, status.value)
+
+
+def fee_status_ru(status: FeeStatus) -> str:
+    return {
+        FeeStatus.PENDING: "ожидает",
+        FeeStatus.PAID: "оплачен",
+        FeeStatus.WAIVED: "списан",
+    }.get(status, status.value)
+
+
+def fine_status_ru(status: FineStatus) -> str:
+    return {
+        FineStatus.ACTIVE: "активен",
+        FineStatus.CANCELLED: "оплачен",
+    }.get(status, status.value)
+
+
+# ─── Overdue helper ─────────────────────────────────────────────
+
+async def compute_overdue(
+    session: AsyncSession, threshold_days: int = 15,
+) -> tuple[list[tuple["MonthlyFee", int]], list[tuple["Fine", int]]]:
+    """Return (overdue_fees, overdue_fines) where each item is (entity, days_overdue)."""
+    from datetime import date as date_cls
+    from src.infrastructure.repositories.fee_repository import FeeRepository
+    from src.infrastructure.repositories.fine_repository import FineRepository
+    from .timezone import today_msk
+
+    today = today_msk()
+    fee_repo = FeeRepository(session)
+    fine_repo = FineRepository(session)
+
+    overdue_fees: list[tuple["MonthlyFee", int]] = []
+    for fee in await fee_repo.list_all_pending():
+        if fee.remaining_amount <= 0:
+            continue
+        assessed = fee.assessed_at
+        if assessed.tzinfo is None:
+            assessed = assessed.replace(tzinfo=today.tzinfo if hasattr(today, 'tzinfo') else None)
+        days = (today - assessed.date()).days
+        if days >= threshold_days:
+            overdue_fees.append((fee, days))
+
+    overdue_fines: list[tuple["Fine", int]] = []
+    for fine in await fine_repo.list_active():
+        if fine.remaining_amount <= 0:
+            continue
+        issued = fine.created_at
+        if issued.tzinfo is None:
+            issued = issued.replace(tzinfo=today.tzinfo if hasattr(today, 'tzinfo') else None)
+        days = (today - issued.date()).days
+        if days >= threshold_days:
+            overdue_fines.append((fine, days))
+
+    return overdue_fees, overdue_fines
 
 
 async def safe_edit(callback: CallbackQuery, *args, **kwargs) -> None:
@@ -93,6 +165,7 @@ async def require_role(callback: CallbackQuery, role: UserRole) -> bool:
         user = await repo.get_by_telegram_id(callback.from_user.id)
         if user and user.status == UserStatus.ACTIVE and (user.role == role or user.role == UserRole.ADMIN):
             is_allowed = True
+            break
     if not is_allowed:
         await callback.answer(ACCESS_DENIED, show_alert=True)
     return is_allowed
@@ -106,6 +179,19 @@ async def require_treasurer_or_admin(callback: CallbackQuery) -> bool:
         user = await repo.get_by_telegram_id(callback.from_user.id)
         if user and user.status == UserStatus.ACTIVE and (user.role == UserRole.TREASURER or user.role == UserRole.ADMIN):
             is_allowed = True
+            break
     if not is_allowed:
-        await callback.answer("⛔ Нет доступа", show_alert=True)
+        await callback.answer(ACCESS_DENIED, show_alert=True)
     return is_allowed
+
+
+class FakeCallback:
+    """Minimal mock of aiogram CallbackQuery for use in message-based flows."""
+
+    def __init__(self, message: Message):
+        self.message = message
+        self.from_user = message.from_user
+        self.bot = message.bot
+
+    async def answer(self) -> None:
+        pass

@@ -19,29 +19,6 @@ from src.domain.value_objects.fine_status import FineStatus
 from src.domain.value_objects.payment_status import PaymentStatus
 from src.domain.value_objects.role import UserRole
 
-
-# ─── Russian status labels for UI ─────────────────
-def _payment_status_ru(status: PaymentStatus) -> str:
-    return {
-        PaymentStatus.PENDING: "ожидает",
-        PaymentStatus.CONFIRMED: "подтверждён",
-        PaymentStatus.REJECTED: "отклонён",
-    }.get(status, status.value)
-
-
-def _fee_status_ru(status: FeeStatus) -> str:
-    return {
-        FeeStatus.PENDING: "ожидает",
-        FeeStatus.PAID: "оплачен",
-        FeeStatus.WAIVED: "списан",
-    }.get(status, status.value)
-
-
-def _fine_status_ru(status: FineStatus) -> str:
-    return {
-        FineStatus.ACTIVE: "активен",
-        FineStatus.CANCELLED: "оплачен",
-    }.get(status, status.value)
 from src.infrastructure.database.models.monthly_fee import MonthlyFeeModel
 from src.infrastructure.database.session import get_session
 from src.infrastructure.repositories.audit_repository import AuditLogRepository
@@ -52,7 +29,12 @@ from src.infrastructure.repositories.settings_repository import ClubSettingsRepo
 from src.infrastructure.repositories.user_repository import UserRepository
 from src.infrastructure.timezone import now_msk
 from src.presentation.keyboards.common import back_keyboard, build_kb, confirm_cancel_keyboard
-from src.presentation.utils import require_role
+from src.presentation.utils import (
+    require_role,
+    payment_status_ru,
+    fee_status_ru,
+    fine_status_ru,
+)
 
 router = Router()
 logger = logging.getLogger(__name__)
@@ -153,7 +135,7 @@ async def ledger_view_payments(callback: CallbackQuery) -> None:
             }.get(p.status, "❓")
             date_str = p.payment_date.strftime('%d.%m.%Y') if p.payment_date else f'{p.month:02d}/{p.year}'
             comment_part = f" | {p.comment}" if p.comment else ""
-            ru_status = _payment_status_ru(p.status)
+            ru_status = payment_status_ru(p.status)
             # Each row is clickable — opens edit/delete menu
             lines.append(
                 f"{status_icon} <b>{p.amount:,.2f}₽</b> "
@@ -187,7 +169,7 @@ async def ledger_payment_view(callback: CallbackQuery) -> None:
             f"👤 Пользователь: <code>{payment.user_id}</code>\n"
             f"💰 Сумма: <code>{payment.amount:,.2f}₽</code>\n"
             f"📅 Дата: <code>{date_str}</code>\n"
-            f"📌 Статус: <code>{_payment_status_ru(payment.status)}</code>\n"
+            f"📌 Статус: <code>{payment_status_ru(payment.status)}</code>\n"
             f"💬 Комментарий: <code>{payment.comment or '—'}</code>",
             reply_markup=back_keyboard(f"ledger_payments:{payment.user_id}"),
         )
@@ -435,7 +417,7 @@ async def ledger_view_fines(callback: CallbackQuery) -> None:
         for f in fines:
             remaining = f.remaining_amount
             status_icon = "⚠️" if f.status == FineStatus.ACTIVE and remaining > 0 else "✅"
-            ru_status = _fine_status_ru(f.status)
+            ru_status = fine_status_ru(f.status)
             lines.append(
                 f"{status_icon} <b>{remaining:,.2f}₽</b> / {f.amount:,.2f}₽ — {f.reason}"
                 f"{' | ' + f.comment if f.comment else ''}"
@@ -467,7 +449,7 @@ async def ledger_fine_view(callback: CallbackQuery) -> None:
             f"Остаток: <code>{fine.remaining_amount:,.2f}₽</code>\n"
             f"📝 Причина: <code>{fine.reason}</code>\n"
             f"💬 Комментарий: <code>{fine.comment or '—'}</code>\n"
-            f"📌 Статус: <code>{_fine_status_ru(fine.status)}</code>",
+            f"📌 Статус: <code>{fine_status_ru(fine.status)}</code>",
             reply_markup=back_keyboard(f"ledger_fines:{fine.user_id}"),
         )
         edit_kb = build_kb([
@@ -724,7 +706,7 @@ async def ledger_fee_view(callback: CallbackQuery) -> None:
             f"👤 Пользователь: <code>{fee.user_id}</code>\n"
             f"💰 Сумма: <code>{fee.amount:,.2f}₽</code>\n"
             f"📅 Период: <code>{fee.month:02d}/{fee.year}</code>\n"
-            f"📌 Статус: <code>{_fee_status_ru(fee.status)}</code>\n"
+            f"📌 Статус: <code>{fee_status_ru(fee.status)}</code>\n"
             f"💬 Комментарий: <code>{fee.comment or '—'}</code>\n"
             f"📆 Дата оплаты: <code>{fee.paid_at.strftime('%d.%m.%Y') if fee.paid_at else '—'}</code>",
             reply_markup=back_keyboard(f"ledger_fees:{fee.user_id}"),
@@ -760,7 +742,7 @@ async def ledger_edit_fee(callback: CallbackQuery, state: FSMContext) -> None:
             f"✏️ <b>Редактирование взноса #{fee_id}</b>\n"
             f"Сумма: <code>{fee.amount}</code>\n"
             f"Период: <code>{fee.month:02d}/{fee.year}</code>\n"
-            f"Статус: <code>{_fee_status_ru(fee.status)}</code>\n\n"
+            f"Статус: <code>{fee_status_ru(fee.status)}</code>\n\n"
             f"Введите <b>новую сумму</b> (или /skip):",
             reply_markup=confirm_cancel_keyboard("ledger_save_fee", "ledger_cancel_edit"),
         )
@@ -924,7 +906,7 @@ async def ledger_delete_fee(callback: CallbackQuery) -> None:
             return
 
         user_id = fee.user_id
-        await session.execute(delete(MonthlyFeeModel).where(MonthlyFeeModel.id == fee_id))
+        await fee_repo.delete(fee_id)
         await session.flush()
 
         # Recalculate balance

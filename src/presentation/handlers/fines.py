@@ -20,7 +20,7 @@ from src.infrastructure.repositories.settings_repository import ClubSettingsRepo
 from src.presentation.keyboards.common import back_keyboard, build_kb, confirm_cancel_keyboard, main_menu_keyboard
 from src.presentation.handlers.common import callback_main_menu
 from src.infrastructure.timezone import now_msk
-from src.presentation.utils import safe_edit, require_role
+from src.presentation.utils import FakeCallback, safe_edit, require_role
 from src.presentation.states import FineStates
 
 router = Router()
@@ -94,15 +94,6 @@ async def fine_issue_comment(message: Message, state: FSMContext) -> None:
         await state.update_data(fine_comment=None)
     else:
         await state.update_data(fine_comment=message.text.strip())
-
-    class FakeCallback:
-        def __init__(self, msg):
-            self.message = msg
-            self.from_user = msg.from_user
-            self.bot = msg.bot
-
-        async def answer(self):
-            pass
 
     await _fine_finalize(FakeCallback(message), state)
 
