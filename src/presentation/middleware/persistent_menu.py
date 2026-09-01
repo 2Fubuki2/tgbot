@@ -1,20 +1,17 @@
-"""PostMiddleware: внедряет persistent ReplyKeyboard в ответы бота.
+"""PostMiddleware: persistent ReplyKeyboard под полем ввода.
 
-Telegram показывает ReplyKeyboard (кнопки под полем ввода) только когда
-bot отправляет сообщение С reply_markup. Нельзя отправить их отдельно —
-нужно включить в ответ бота.
-
-Подход: middleware перехватывает ответ бота через answer() и добавляет
-reply_markup. Это работает потому, что в aiogram ответ бота отправляется
-через bot.send_message(), а middleware может модифицировать эти данные.
+Telegram показывает persistent ReplyKeyboard (кнопки под полем ввода)
+только когда бот отправляет сообщение БЕЗ reply_to_message_id.
+Поэтому middleware отправляет клавиатуру как обычное сообщение через bot.send_message,
+а не как ответ через event.answer().
 """
 
 from __future__ import annotations
 
 import logging
-from typing import Any, Awaitable, Callable, Dict
+from typing import Any, Awaitable, Callable, Dict, cast
 
-from aiogram import BaseMiddleware
+from aiogram import BaseMiddleware, Bot
 from aiogram.types import CallbackQuery, Message, ReplyKeyboardMarkup, KeyboardButton, TelegramObject
 
 from src.domain.value_objects.role import UserRole
@@ -138,10 +135,10 @@ def _build_reply_kb(role: UserRole, nav_history: list[str]) -> ReplyKeyboardMark
 
 
 class PersistentMenuMiddleware(BaseMiddleware):
-    """PostMiddleware: injects persistent ReplyKeyboard into bot messages.
+    """PostMiddleware: sends persistent ReplyKeyboard as a regular message.
 
-    Работает через перехват ответа бота — добавляет reply_markup
-    к сообщению, которое бот отправляет пользователю.
+    Uses bot.send_message() instead of event.answer() so Telegram displays
+    the keyboard in the persistent bottom bar (not as a reply thread).
     """
 
     async def __call__(
@@ -157,14 +154,18 @@ class PersistentMenuMiddleware(BaseMiddleware):
             return result
 
         user_id: int | None = None
+        chat_id: int | None = None
         if isinstance(event, Message):
             if event.text and event.text.startswith("/"):
                 return result
-            user_id = event.from_user.id if event.from_user else event.chat.id
+            user_id = event.from_user.id if event.from_user else None
+            chat_id = event.chat.id
         elif isinstance(event, CallbackQuery):
             user_id = event.from_user.id
+            if event.message:
+                chat_id = event.message.chat.id
 
-        if user_id is None:
+        if user_id is None or chat_id is None:
             return result
 
         nav_history = get_nav_history(user_id)
@@ -179,21 +180,31 @@ class PersistentMenuMiddleware(BaseMiddleware):
 
         kb = _build_reply_kb(role, nav_history)
 
+        # Получаем бота из data и отправляем клавиатуру как обычное сообщение
+        bot: Bot = cast(Bot, data["bot"])
+
         try:
             if isinstance(event, Message):
-                # Ответ на сообщение пользователя с reply-кнопками
-                await event.answer(reply_markup=kb)
-                logger.info("PersistentMenu: sent reply_kb for msg user=%s", user_id)
+                await bot.send_message(
+                    chat_id=chat_id,
+                    text="⬇️ Выберите действие:",
+                    reply_markup=kb,
+                )
+                logger.info("PersistentMenu: sent kb for msg user=%s chat=%s", user_id, chat_id)
             elif isinstance(event, CallbackQuery) and event.message:
-                # Редактируем сообщение бота, добавляя reply_markup
+                # Для callback — редактируем сообщение бота, добавляя reply_markup
                 try:
                     await event.message.edit_reply_markup(reply_markup=kb)
-                    logger.info("PersistentMenu: edited reply_kb for cb user=%s", user_id)
+                    logger.info("PersistentMenu: edited kb for cb user=%s", user_id)
                 except Exception:
-                    # Fallback — отправляем новое сообщение с reply_markup
-                    await event.answer(reply_markup=kb)
-                    logger.info("PersistentMenu: sent reply_kb (fallback) for cb user=%s", user_id)
+                    # Fallback — отправляем новое сообщение
+                    await bot.send_message(
+                        chat_id=chat_id,
+                        text="⬇️ Выберите действие:",
+                        reply_markup=kb,
+                    )
+                    logger.info("PersistentMenu: sent kb (fallback) for cb user=%s", user_id)
         except Exception:
-            logger.exception("Failed to inject persistent menu for user %s", user_id)
+            logger.exception("Failed to send persistent menu for user %s", user_id)
 
         return result
