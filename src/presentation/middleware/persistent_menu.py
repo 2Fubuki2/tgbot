@@ -52,16 +52,16 @@ def _build_reply_kb(role: UserRole, nav_history: list[str]) -> ReplyKeyboardMark
     # Кнопки по текущему экрану
     screen_buttons: dict[str, list[tuple[str, str]]] = {
         "main_menu": [],
-        "my_budget": [("🏠 Меню", "main_menu")],
-        "member_account": [("💰 Платежи", "member_payments"), ("⚠️ Штрафы", "member_fines")],
-        "member_payments": [("📋 Лицевой счёт", "member_account")],
-        "member_fines": [("💰 Платежи", "member_payments")],
+        "my_budget": [],
+        "member_account": [],
+        "member_payments": [],
+        "member_fines": [],
         "member_details": [],
-        "club_budget": [("🏠 Меню", "main_menu")],
-        "treasurer_pending": [("📋 Участники", "treasurer_members")],
-        "treasurer_members": [("⏳ Платежи", "treasurer_pending")],
-        "treasurer_fines": [("💸 Расходы", "treasurer_expenses")],
-        "treasurer_expenses": [("📋 Участники", "treasurer_members")],
+        "club_budget": [],
+        "treasurer_pending": [],
+        "treasurer_members": [],
+        "treasurer_fines": [],
+        "treasurer_expenses": [],
         "treasurer_timeline": [],
         "admin_management": [],
     }
@@ -72,15 +72,10 @@ def _build_reply_kb(role: UserRole, nav_history: list[str]) -> ReplyKeyboardMark
     if role == UserRole.MEMBER:
         role_btns = [("💰 Мой бюджет", "my_budget")]
     elif role == UserRole.TREASURER:
-        role_btns = [("🏠 Меню", "main_menu"), ("💰 Мой бюджет", "my_budget")]
+        role_btns = [("💰 Мой бюджет", "my_budget"), ("💼 Бюджет клуба", "club_budget")]
     elif role == UserRole.ADMIN:
-        role_btns = [("🏠 Меню", "main_menu"), ("💰 Мой бюджет", "my_budget"),
-                       ("💼 Бюджет клуба", "club_budget")]
+        role_btns = [("💰 Мой бюджет", "my_budget"), ("💼 Бюджет клуба", "club_budget")]
     flat_buttons.extend(role_btns)
-
-    # Кнопка «Назад»
-    if len(nav_history) > 1 and current != "main_menu":
-        flat_buttons.append(("⬅️ Назад", "back"))
 
     # Убираем дубликаты по тексту
     seen: set[str] = set()
@@ -155,12 +150,12 @@ class PersistentMenuMiddleware(BaseMiddleware):
         # Получаем бота из data
         bot: Bot = cast(Bot, data["bot"])
 
-        # Отправляем клавиатуру как обычное сообщение (не ответ!)
+        # Отправляем клавиатуру без текста — Telegram покажет её под полем ввода
         try:
             if isinstance(event, Message):
                 await bot.send_message(
                     chat_id=chat_id,
-                    text="⬇️ Выберите действие:",
+                    text=" ",
                     reply_markup=kb,
                 )
                 logger.info("PersistentMenu: sent kb for msg user=%s chat=%s role=%s",
@@ -172,7 +167,7 @@ class PersistentMenuMiddleware(BaseMiddleware):
                 except Exception:
                     await bot.send_message(
                         chat_id=chat_id,
-                        text="⬇️ Выберите действие:",
+                        text=" ",
                         reply_markup=kb,
                     )
                     logger.info("PersistentMenu: sent kb (fallback) for cb user=%s", user_id)
