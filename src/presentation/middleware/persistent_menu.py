@@ -1,4 +1,9 @@
-"""Middleware для показа.persistent bottom button bar после каждого текстового сообщения."""
+"""PostMiddleware: после каждого события показывает persistent keyboard под полем ввода.
+
+Telegram не поддерживает «кнопки под полем ввода» нативно для ботов,
+но ReplyKeyboardMarkup с is_persistent=True — ближайший аналог:
+кнопки показываются под полем ввода и сохраняются между сообщениями.
+"""
 
 from __future__ import annotations
 
@@ -6,17 +11,16 @@ import logging
 from typing import Any, Awaitable, Callable, Dict
 
 from aiogram import BaseMiddleware
-from aiogram.types import Message, TelegramObject
+from aiogram.types import CallbackQuery, Message, ReplyKeyboardMarkup, KeyboardButton, TelegramObject
 
 from src.domain.value_objects.role import UserRole
 from src.infrastructure.database.session import get_session
 from src.infrastructure.repositories.user_repository import UserRepository
-from src.presentation.keyboards.common import persistent_menu_keyboard
 from src.presentation.middleware.navigation import get_nav_history
 
 logger = logging.getLogger(__name__)
 
-# FSM-состояния, в которых пользователь вводит данные — кнопка не показываем
+# FSM-состояния, в которых пользователь вводит данные — панель скрываем
 _INPUT_STATES = {
     # Payment flow
     "waiting_amount",
@@ -45,7 +49,7 @@ _INPUT_STATES = {
     "waiting_new_name",
     # Broadcast
     "waiting_text",
-    # Ledger edit (raw state names, not class-based)
+    # Ledger edit
     "ledger_edit_payment_amount",
     "ledger_edit_payment_month",
     "ledger_edit_payment_comment",
@@ -58,9 +62,79 @@ _INPUT_STATES = {
 }
 
 
+def _is_input_state(state) -> bool:
+    if state is None:
+        return False
+    state_name = state.state if hasattr(state, "state") else str(state)
+    return state_name in _INPUT_STATES or any(s in state_name for s in _INPUT_STATES)
+
+
+def _build_reply_kb(role: UserRole, nav_history: list[str]) -> ReplyKeyboardMarkup:
+    """Собрать persistent ReplyKeyboard — кнопки под полем ввода."""
+    current = nav_history[-1] if nav_history else "main_menu"
+
+    flat_buttons: list[tuple[str, str]] = []
+
+    # Кнопки по текущему экрану
+    screen_buttons: dict[str, list[tuple[str, str]]] = {
+        "main_menu": [],
+        "my_budget": [("🏠 Меню", "main_menu")],
+        "member_account": [("💰 Платежи", "member_payments"), ("⚠️ Штрафы", "member_fines")],
+        "member_payments": [("📋 Лицевой счёт", "member_account")],
+        "member_fines": [("💰 Платежи", "member_payments")],
+        "member_details": [],
+        "club_budget": [("🏠 Меню", "main_menu")],
+        "treasurer_pending": [("📋 Участники", "treasurer_members")],
+        "treasurer_members": [("⏳ Платежи", "treasurer_pending")],
+        "treasurer_fines": [("💸 Расходы", "treasurer_expenses")],
+        "treasurer_expenses": [("📋 Участники", "treasurer_members")],
+        "treasurer_timeline": [],
+        "admin_management": [],
+    }
+    flat_buttons.extend(screen_buttons.get(current, []))
+
+    # Кнопки по роли
+    role_btns: list[tuple[str, str]] = []
+    if role == UserRole.MEMBER:
+        role_btns = [("💰 Мой бюджет", "my_budget")]
+    elif role == UserRole.TREASURER:
+        role_btns = [("🏠 Меню", "main_menu"), ("💰 Мой бюджет", "my_budget")]
+    elif role == UserRole.ADMIN:
+        role_btns = [("🏠 Меню", "main_menu"), ("💰 Мой бюджет", "my_budget"),
+                       ("💼 Бюджет клуба", "club_budget")]
+    flat_buttons.extend(role_btns)
+
+    # Кнопка «Назад»
+    if len(nav_history) > 1 and current != "main_menu":
+        flat_buttons.append(("⬅️ Назад", "back"))
+
+    # Убираем дубликаты по тексту, сохраняя порядок
+    seen: set[str] = set()
+    deduped: list[tuple[str, str]] = []
+    for b in flat_buttons:
+        if b[0] not in seen:
+            seen.add(b[0])
+            deduped.append(b)
+    flat_buttons = deduped
+
+    # Не более 3 кнопок в ряд
+    rows: list[list[KeyboardButton]] = []
+    for i in range(0, len(flat_buttons), 3):
+        chunk = flat_buttons[i:i + 3]
+        rows.append([KeyboardButton(text=b[0]) for b in chunk])
+
+    return ReplyKeyboardMarkup(
+        keyboard=rows,
+        resize_keyboard=True,
+        one_time_keyboard=False,
+        is_persistent=True,
+        input_field_placeholder="Введите сообщение…",
+    )
+
+
 class PersistentMenuMiddleware(BaseMiddleware):
-    """После каждого текстового сообщения показывает persistent-панель кнопок
-    (если пользователь не в процессе ввода данных)."""
+    """PostMiddleware: после обработки каждого события показывает
+    persistent ReplyKeyboard (кнопки под полем ввода)."""
 
     async def __call__(
         self,
@@ -68,40 +142,48 @@ class PersistentMenuMiddleware(BaseMiddleware):
         event: TelegramObject,
         data: Dict[str, Any],
     ) -> Any:
-        if not isinstance(event, Message):
-            return await handler(event, data)
+        # Сначала даём handler'у обработать событие
+        result = await handler(event, data)
 
-        msg = event
-        if msg.text is None or msg.text.startswith("/"):
-            return await handler(event, data)
-
-        # Если пользователь в FSM-состоянии ввода — не показываем панель
         state = data.get("state")
-        if state is not None:
-            state_name = state.state if hasattr(state, "state") else str(state)
-            if state_name in _INPUT_STATES or any(s in state_name for s in _INPUT_STATES):
-                return await handler(event, data)
+        if _is_input_state(state):
+            # Пользователь вводит данные — скрываем панель
+            return result
 
-        user_id = msg.from_user.id if msg.from_user else msg.chat.id
+        user_id: int | None = None
+        if isinstance(event, Message):
+            if event.text and event.text.startswith("/"):
+                return result  # команды — не показываем
+            user_id = event.from_user.id if event.from_user else event.chat.id
+        elif isinstance(event, CallbackQuery):
+            user_id = event.from_user.id
 
-        # Получаем роль и историю навигации
+        if user_id is None:
+            return result
+
         nav_history = get_nav_history(user_id)
-        role: UserRole = UserRole.MEMBER  # default
 
+        # Получаем роль
+        role: UserRole = UserRole.MEMBER
         async for session in get_session():
             repo = UserRepository(session)
             user = await repo.get_by_telegram_id(user_id)
             if user:
                 role = user.role
+                break
 
-        kb = persistent_menu_keyboard(role, nav_history)
+        kb = _build_reply_kb(role, nav_history)
 
+        # Отправляем reply_markup к сообщению бота
         try:
-            await msg.answer(
-                "💡 <b>Навигация</b>",
-                reply_markup=kb,
-            )
+            if isinstance(event, Message):
+                await event.answer(reply_markup=kb)
+            elif isinstance(event, CallbackQuery) and event.message:
+                try:
+                    await event.message.edit_reply_markup(reply_markup=kb)
+                except Exception:
+                    await event.answer(reply_markup=kb)
         except Exception:
             logger.exception("Failed to send persistent menu for user %s", user_id)
 
-        return await handler(event, data)
+        return result

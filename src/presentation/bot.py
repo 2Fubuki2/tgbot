@@ -76,11 +76,13 @@ def create_dispatcher() -> Dispatcher:
     navigation_middleware = NavigationMiddleware()
     bot_status_middleware = BotStatusMiddleware()
 
-    # Order matters: persistent menu first, then bot status, then navigation
-    dp.message.middleware(persistent_menu_middleware)
+    # Order matters: navigation first, then bot status, then persistent menu last
+    dp.message.middleware(navigation_middleware)
     dp.message.middleware(bot_status_middleware)
-    dp.callback_query.middleware(bot_status_middleware)
+    dp.message.middleware(persistent_menu_middleware)
     dp.callback_query.middleware(navigation_middleware)
+    dp.callback_query.middleware(bot_status_middleware)
+    dp.callback_query.middleware(persistent_menu_middleware)
 
     # Store middleware globally for access from handlers
     global _bot_status_middleware
