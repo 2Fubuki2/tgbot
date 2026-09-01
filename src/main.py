@@ -7,6 +7,7 @@ Entry point for polling mode (local development).
 import asyncio
 import logging
 
+from aiogram.utils.backoff import BackoffConfig
 from sqlalchemy import inspect, text
 
 from src.config.logger import setup_logging
@@ -24,6 +25,9 @@ from src.presentation.utils import safe_edit
 from src.presentation.bot import create_bot, create_dispatcher
 
 logger = logging.getLogger(__name__)
+
+# Увеличенный backoff: конфликт Telegram требует ожидания >30s (timeout getUpdates)
+_POLLING_BACKOFF = BackoffConfig(min_delay=5.0, max_delay=45.0, factor=1.5, jitter=0.2)
 
 
 def _ensure_missing_columns(bind) -> None:
@@ -147,7 +151,7 @@ async def main() -> None:
     logger.info("Daily fee assessment scheduler started")
 
     try:
-        await dp.start_polling(bot)
+        await dp.start_polling(bot, backoff_config=_POLLING_BACKOFF)
     finally:
         scheduler_task.cancel()
         try:
