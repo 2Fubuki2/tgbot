@@ -144,6 +144,11 @@ class PersistentMenuMiddleware(BaseMiddleware):
 
         kb = _build_reply_kb(role, nav_history)
 
+        # Отправляем клавиатуру только после сообщений (команд/текста),
+        # не после callback-кликов — там handler сам управляет клавиатурой.
+        if isinstance(event, CallbackQuery):
+            return result
+
         # Получаем бота из data
         bot: Bot = cast(Bot, data["bot"])
 

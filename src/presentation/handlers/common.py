@@ -199,6 +199,44 @@ async def callback_club_budget(callback: CallbackQuery) -> None:
         await callback.answer("⛔ Нет доступа", show_alert=True)
 
 
+# Message handlers for persistent menu buttons (sent as text when clicked)
+@router.message(F.text == "💰 Мой бюджет")
+async def msg_my_budget(message: Message) -> None:
+    """Handle persistent menu button: 💰 Мой бюджет."""
+    from src.presentation.keyboards.common import my_budget_keyboard
+
+    async for session in get_session():
+        repo = UserRepository(session)
+        user = await repo.get_by_telegram_id(message.from_user.id)
+
+    if user:
+        await message.answer(
+            f"💰 <b>Мой бюджет</b>\n"
+            f"👤 {user.full_name}\n\n"
+            f"Здесь вы можете посмотреть свой счёт, историю платежей и штрафов.",
+            reply_markup=my_budget_keyboard(),
+        )
+
+
+@router.message(F.text == "💼 Бюджет клуба")
+async def msg_club_budget(message: Message) -> None:
+    """Handle persistent menu button: 💼 Бюджет клуба."""
+    from src.presentation.keyboards.common import club_budget_keyboard
+
+    async for session in get_session():
+        repo = UserRepository(session)
+        user = await repo.get_by_telegram_id(message.from_user.id)
+
+    if user and user.role in (UserRole.TREASURER, UserRole.ADMIN):
+        await message.answer(
+            f"💼 <b>Бюджет клуба</b>\n\n"
+            f"Управление взносами, платежами, штрафами и расходами клуба.",
+            reply_markup=club_budget_keyboard(),
+        )
+    else:
+        await message.answer("⛔ Нет доступа")
+
+
 @router.callback_query(F.data == "admin_management")
 async def callback_admin_management(callback: CallbackQuery) -> None:
     """Управление - только для админа."""
