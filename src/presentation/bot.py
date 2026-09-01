@@ -8,6 +8,40 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.types import BotCommand, CallbackQuery, ErrorEvent, Message
 
+# Monkey-patch FilterObject.call to debug Python 3.13 TypeError
+try:
+    from aiogram.dispatcher.event.handler import FilterObject
+    from functools import partial as _partial
+    import sys as _sys
+
+    _original_filter_call = FilterObject.call
+
+    async def _debug_filter_call(self, *args, **kwargs):
+        callback = self.callback
+        _logger = logging.getLogger(__name__)
+        _logger.debug(
+            "FilterObject.call: callback=%r type=%s callable=%s",
+            callback, type(callback).__name__, callable(callback),
+        )
+        if not callable(callback):
+            _logger.error(
+                "FilterObject.call: NON-CALLABLE CALLBACK! type=%s value=%r",
+                type(callback).__name__, callback,
+            )
+            # Try to recover by checking if it's a bound method
+            if hasattr(callback, "__call__"):
+                _logger.error("Has __call__: %r", callback.__call__)
+            if hasattr(callback, "__func__"):
+                _logger.error("__func__: %r", callback.__func__)
+            if hasattr(callback, "__self__"):
+                _logger.error("__self__: %r", callback.__self__)
+        return await _original_filter_call(self, *args, **kwargs)
+
+    FilterObject.call = _debug_filter_call
+    logging.getLogger(__name__).info("Applied FilterObject.call debug patch (Python %s.%s)", *_sys.version_info[:2])
+except Exception as _e:
+    logging.getLogger(__name__).warning("Failed to apply FilterObject.call patch: %s", _e)
+
 from src.config.settings import settings
 from src.presentation.handlers import (
     admin,
