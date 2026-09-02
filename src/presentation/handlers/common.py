@@ -40,8 +40,7 @@ async def cmd_start(message: Message) -> None:
         await message.answer(
             f"👋 Добро пожаловать, <b>{user.full_name}</b>!\n"
             f"📌 Роль: {role_label}\n\n"
-            f"🏠 <b>Главное меню</b>\n"
-            f"Выберите раздел:",
+            f"🏠 <b>Главное меню</b>",
             reply_markup=main_menu_keyboard(user.role),
         )
     else:

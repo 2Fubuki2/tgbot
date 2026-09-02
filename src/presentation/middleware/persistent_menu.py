@@ -2,7 +2,7 @@
 
 Telegram показывает persistent ReplyKeyboard (кнопки под полем ввода)
 только когда бот отправляет сообщение БЕЗ reply_to_message_id.
-Поэтому middleware отправляет клавиатуру как обычное сообщение через bot.send_message,
+Middleware отправляет клавиатуру как обычное сообщение через bot.send_message,
 а не как ответ через event.answer().
 """
 
@@ -33,10 +33,10 @@ _INPUT_STATES = {
     "ledger_edit_fee_amount", "ledger_edit_fee_month", "ledger_edit_fee_status",
 }
 
-# Хранилище последнего отправленного экрана по чату
-_last_kb_sent: Dict[int, tuple[str, str]] = {}
+# Состояние: chat_id -> последний отправленный экран
+_kb_state: Dict[int, str] = {}
 
-# Экраны, на которых нужно показывать persistent-кнопки (верхнеуровневые)
+# Экраны, на которых показываем persistent-кнопки (верхнеуровневые)
 _PERSISTENT_SCREENS = {"main_menu", "my_budget", "club_budget", "admin_management"}
 
 
@@ -55,32 +55,20 @@ def _build_reply_kb(role: UserRole, nav_history: list[str]) -> ReplyKeyboardMark
 
     flat_buttons: list[tuple[str, str]] = []
 
-    # Кнопки по текущему экрану
-    screen_buttons: dict[str, list[tuple[str, str]]] = {
-        "main_menu": [],
-        "my_budget": [],
-        "member_account": [],
-        "member_payments": [],
-        "member_fines": [],
-        "member_details": [],
-        "club_budget": [],
-        "treasurer_pending": [],
-        "treasurer_members": [],
-        "treasurer_fines": [],
-        "treasurer_expenses": [],
-        "treasurer_timeline": [],
-        "admin_management": [],
-    }
+    # Кнопки по текущему экрану (пока пусто — все кнопки по роли)
+    screen_buttons: dict[str, list[tuple[str, str]]] = {}
     flat_buttons.extend(screen_buttons.get(current, []))
 
     # Кнопки по роли
-    role_btns: list[tuple[str, str]] = []
     if role == UserRole.MEMBER:
         role_btns = [("💰 Мой бюджет", "my_budget")]
     elif role == UserRole.TREASURER:
         role_btns = [("💰 Мой бюджет", "my_budget"), ("💼 Бюджет клуба", "club_budget")]
     elif role == UserRole.ADMIN:
-        role_btns = [("💰 Мой бюджет", "my_budget"), ("💼 Бюджет клуба", "club_budget")]
+        role_btns = [("💰 Мой бюджет", "my_budget"), ("💼 Бюджет клуба", "club_budget"),
+                     ("👑 Управление", "admin_management")]
+    else:
+        role_btns = []
     flat_buttons.extend(role_btns)
 
     # Убираем дубликаты по тексту
@@ -106,26 +94,26 @@ def _build_reply_kb(role: UserRole, nav_history: list[str]) -> ReplyKeyboardMark
     )
 
 
-def _should_send_kb(chat_id: int, screen: str, role: UserRole) -> bool:
-    """Нужно ли отправлять клавиатуру в этот чат?"""
-    last = _last_kb_sent.get(chat_id)
-    if last is None:
-        return True
-    last_screen, last_role = last
-    return last_screen != screen or last_role != role.name
-
-
-def _mark_kb_sent(chat_id: int, screen: str, role: UserRole) -> None:
-    _last_kb_sent[chat_id] = (screen, role.name)
+def _get_kb_text(screen: str, nav_history: list[str]) -> str:
+    """Текст-подсказка над persistent-кнопками."""
+    current = nav_history[-1] if nav_history else "main_menu"
+    if current == "main_menu":
+        return "👇 Выберите раздел"
+    elif current == "my_budget":
+        return "💰 Мой бюджет"
+    elif current == "club_budget":
+        return "💼 Бюджет клуба"
+    elif current == "admin_management":
+        return "👑 Управление"
+    else:
+        return "👇 Выберите раздел"
 
 
 class PersistentMenuMiddleware(BaseMiddleware):
     """PostMiddleware: отправляет persistent ReplyKeyboard как обычное сообщение.
 
-    Отправляет клавиатуру только:
-    - после /start и /menu (первые сообщения пользователю)
-    - при возврате на верхнеуровневый экран (main_menu, my_budget, club_budget, admin_management)
-    - НЕ отправляет после каждого callback-клика в глубине навигации
+    Отправляет клавиатуру только один раз при входе на верхнеуровневый экран.
+    Не спамит при каждом клике по sub-page (member_account, member_payments и т.д.).
     """
 
     async def __call__(
@@ -139,7 +127,6 @@ class PersistentMenuMiddleware(BaseMiddleware):
         # Скрываем панель во время ввода данных
         state = data.get("state")
         if _is_input_state(state):
-            logger.debug("PersistentMenu: hiding keyboard (input state)")
             return result
 
         # Определяем пользователя и чат
@@ -159,6 +146,10 @@ class PersistentMenuMiddleware(BaseMiddleware):
         nav_history = get_nav_history(user_id)
         screen = nav_history[-1] if nav_history else "main_menu"
 
+        # Не показываем persistent-меню на sub-page экранах
+        if screen not in _PERSISTENT_SCREENS:
+            return result
+
         # Определяем роль пользователя
         role: UserRole = UserRole.MEMBER
         async for session in get_session():
@@ -168,22 +159,22 @@ class PersistentMenuMiddleware(BaseMiddleware):
                 role = user.role
                 break
 
-        # Если экран не в списке отображения — скрываем клавиатуру (отправляем точку без клавиатуры)
-        if screen not in _PERSISTENT_SCREENS:
-            return result
-
         kb = _build_reply_kb(role, nav_history)
+        kb_text = _get_kb_text(screen, nav_history)
 
-        # Отправляем клавиатуру только если экран/роль изменились
-        if _should_send_kb(chat_id, screen, role):
+        # Отправляем клавиатуру если:
+        # - это первое сообщение для чата
+        # - экран изменился относительно последнего отправленного
+        last_screen = _kb_state.get(chat_id)
+        if last_screen != screen:
             bot: Bot = cast(Bot, data["bot"])
             try:
                 await bot.send_message(
                     chat_id=chat_id,
-                    text="",
+                    text=kb_text,
                     reply_markup=kb,
                 )
-                _mark_kb_sent(chat_id, screen, role)
+                _kb_state[chat_id] = screen
                 logger.info("PersistentMenu: sent kb user=%s chat=%s screen=%s role=%s",
                             user_id, chat_id, screen, role.name)
             except Exception:
