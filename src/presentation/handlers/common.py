@@ -252,6 +252,28 @@ async def msg_club_budget(message: Message, state: FSMContext) -> None:
         record_bot_message(sent.chat.id, sent.message_id)
 
 
+@router.message(F.text == "👑 Управление")
+async def msg_admin_management(message: Message, state: FSMContext) -> None:
+    """Handle persistent menu button: 👑 Управление (admin only)."""
+    await state.clear()
+    from src.presentation.keyboards.common import admin_management_keyboard
+
+    async for session in get_session():
+        repo = UserRepository(session)
+        user = await repo.get_by_telegram_id(message.from_user.id)
+
+    if user and user.role == UserRole.ADMIN:
+        sent = await message.answer(
+            f"👑 <b>Управление клубом</b>\n\n"
+            f"Пользователи, настройки, журнал действий и экспорт данных.",
+            reply_markup=admin_management_keyboard(),
+        )
+        record_bot_message(sent.chat.id, sent.message_id)
+    else:
+        sent = await message.answer("⛔ Нет доступа")
+        record_bot_message(sent.chat.id, sent.message_id)
+
+
 @router.callback_query(F.data == "admin_management")
 async def callback_admin_management(callback: CallbackQuery, state: FSMContext) -> None:
     """Управление - только для админа."""
@@ -445,14 +467,6 @@ async def cmd_show_button(message: Message) -> None:
 async def cmd_hide_button(message: Message, state: FSMContext) -> None:
     """Скрыть persistent-панель кнопок под полем ввода."""
     await state.clear()
-    from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
-
-    kb = ReplyKeyboardMarkup(
-        keyboard=[],
-        resize_keyboard=True,
-        one_time_keyboard=False,
-        is_persistent=True,
-    )
-    await message.answer("", reply_markup=kb)
+    await message.answer("🔽 Панель скрыта", reply_markup=None, remove_keyboard=True)
 
 
