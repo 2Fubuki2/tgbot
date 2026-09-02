@@ -14,6 +14,20 @@ from src.infrastructure.database.session import get_session
 from src.infrastructure.repositories.user_repository import UserRepository
 from src.presentation.texts import ACCESS_DENIED
 
+# Хранилище ID последнего бот-сообщения на чат: chat_id -> message_id
+_last_bot_msg_ids: dict[int, int] = {}
+
+
+def record_bot_message(chat_id: int, message_id: int) -> None:
+    """Запомнить ID сообщения, отправленного ботом в чат.
+    Используется PersistentMenuMiddleware для reply-отправки клавиатуры."""
+    _last_bot_msg_ids[chat_id] = message_id
+
+
+def get_last_bot_message_id(chat_id: int) -> int | None:
+    """Возвращает ID последнего бот-сообщения в чате (если есть)."""
+    return _last_bot_msg_ids.get(chat_id)
+
 if TYPE_CHECKING:
     from src.domain.entities.fine import Fine
     from src.domain.entities.monthly_fee import MonthlyFee
@@ -133,12 +147,14 @@ async def safe_edit(callback: CallbackQuery, *args, **kwargs) -> None:
             kwargs["caption"] = text
         try:
             await msg.edit_caption(**kwargs)
+            record_bot_message(msg.chat.id, msg.message_id)
         except Exception:
             logger.exception("safe_edit: failed to edit caption, fallback to send_message")
             await fallback_send(text or "")
     else:
         try:
             await msg.edit_text(text, *args, **kwargs)
+            record_bot_message(msg.chat.id, msg.message_id)
         except Exception:
             logger.exception("safe_edit: failed to edit text, fallback to send_message")
             await fallback_send(text or "")

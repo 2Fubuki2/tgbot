@@ -14,7 +14,8 @@ from src.infrastructure.database.session import get_session
 from src.infrastructure.repositories.user_repository import UserRepository
 from src.presentation.keyboards.common import main_menu_keyboard
 from src.presentation.router_utils import register_or_get_user
-from src.presentation.utils import safe_edit
+from src.presentation.utils import safe_edit, record_bot_message
+from src.presentation.middleware.persistent_menu import build_reply_keyboard
 
 router = Router()
 
@@ -37,14 +38,16 @@ async def cmd_start(message: Message) -> None:
             UserRole.MEMBER: "Участник",
         }.get(user.role, "Участник")
 
-        await message.answer(
+        sent = await message.answer(
             f"👋 Добро пожаловать, <b>{user.full_name}</b>!\n"
             f"📌 Роль: {role_label}\n\n"
             f"🏠 <b>Главное меню</b>",
             reply_markup=main_menu_keyboard(user.role),
         )
+        record_bot_message(sent.chat.id, sent.message_id)
     else:
-        await message.answer("❌ Ошибка регистрации. Попробуйте позже.")
+        sent = await message.answer("❌ Ошибка регистрации. Попробуйте позже.")
+        record_bot_message(sent.chat.id, sent.message_id)
 
 
 @router.message(Command("menu"))
@@ -67,16 +70,18 @@ async def cmd_menu(message: Message) -> None:
             UserRole.MEMBER: "Участник",
         }.get(user.role, "Участник")
 
-        await message.answer(
+        sent = await message.answer(
             f"🏠 <b>Главное меню</b>\n"
             f"👤 {user.full_name} ({role_label})\n\n"
             f"Выберите раздел:",
             reply_markup=main_menu_keyboard(user.role),
         )
+        record_bot_message(sent.chat.id, sent.message_id)
     else:
-        await message.answer(
+        sent = await message.answer(
             "❌ Вы не зарегистрированы. Отправьте /start",
         )
+        record_bot_message(sent.chat.id, sent.message_id)
 
 
 @router.message(Command("help"))
@@ -120,18 +125,21 @@ async def cmd_help(message: Message) -> None:
         ),
     }.get(user.role, "")
 
-    await message.answer(
+    sent = await message.answer(
         f"❓ <b>Помощь</b>\n\n"
         f"<b>Команды:</b>\n"
         f"/start — регистрация и главное меню\n"
         f"/menu — открыть меню\n"
         f"/help — эта справка\n"
+        f"/button — показать панель кнопок под полем ввода\n"
+        f"/hidebutton — скрыть панель кнопок\n"
         f"{'/stop_bot - остановить бота (админ)' if user.role == UserRole.ADMIN else ''}\n"
         f"{'/restart_bot - перезапустить бота (админ)' if user.role == UserRole.ADMIN else ''}\n\n"
         f"{role_text}\n\n"
         f"💡 Используйте кнопки меню для навигации.",
         reply_markup=main_menu_keyboard(user.role),
     )
+    record_bot_message(sent.chat.id, sent.message_id)
 
 
 @router.callback_query(F.data == "main_menu")
@@ -209,12 +217,13 @@ async def msg_my_budget(message: Message) -> None:
         user = await repo.get_by_telegram_id(message.from_user.id)
 
     if user:
-        await message.answer(
+        sent = await message.answer(
             f"💰 <b>Мой бюджет</b>\n"
             f"👤 {user.full_name}\n\n"
             f"Здесь вы можете посмотреть свой счёт, историю платежей и штрафов.",
             reply_markup=my_budget_keyboard(),
         )
+        record_bot_message(sent.chat.id, sent.message_id)
 
 
 @router.message(F.text == "💼 Бюджет клуба")
@@ -227,13 +236,15 @@ async def msg_club_budget(message: Message) -> None:
         user = await repo.get_by_telegram_id(message.from_user.id)
 
     if user and user.role in (UserRole.TREASURER, UserRole.ADMIN):
-        await message.answer(
+        sent = await message.answer(
             f"💼 <b>Бюджет клуба</b>\n\n"
             f"Управление взносами, платежами, штрафами и расходами клуба.",
             reply_markup=club_budget_keyboard(),
         )
+        record_bot_message(sent.chat.id, sent.message_id)
     else:
-        await message.answer("⛔ Нет доступа")
+        sent = await message.answer("⛔ Нет доступа")
+        record_bot_message(sent.chat.id, sent.message_id)
 
 
 @router.callback_query(F.data == "admin_management")
@@ -400,5 +411,34 @@ async def cmd_restart_bot(message: Message) -> None:
 
     # Логируем перезапуск
     print(f"✅ Бот перезапущен администратором {user.full_name} (ID: {user.telegram_id})")
+
+
+@router.message(Command("button"))
+async def cmd_show_button(message: Message) -> None:
+    """Показать persistent-панель кнопок под полем ввода."""
+    async for session in get_session():
+        repo = UserRepository(session)
+        user = await repo.get_by_telegram_id(message.from_user.id)
+
+    if not user or user.status != UserStatus.ACTIVE:
+        await message.answer("❌ Вы не зарегистрированы. Отправьте /start")
+        return
+
+    kb = build_reply_keyboard(user.role)
+    await message.answer("👇 Панель управления", reply_markup=kb)
+
+
+@router.message(Command("hidebutton"))
+async def cmd_hide_button(message: Message) -> None:
+    """Скрыть persistent-панель кнопок под полем ввода."""
+    from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
+
+    kb = ReplyKeyboardMarkup(
+        keyboard=[],
+        resize_keyboard=True,
+        one_time_keyboard=False,
+        is_persistent=True,
+    )
+    await message.answer("", reply_markup=kb)
 
 
