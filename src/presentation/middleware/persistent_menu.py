@@ -33,6 +33,9 @@ _INPUT_STATES = {
     "ledger_edit_fee_amount", "ledger_edit_fee_month", "ledger_edit_fee_status",
 }
 
+# Хранилище последнего отправленного экрана по чату — чтобы не спамить "."
+_last_kb_sent: Dict[int, tuple[str, str]] = {}
+
 
 def _is_input_state(state) -> bool:
     if state is None:
@@ -100,6 +103,21 @@ def _build_reply_kb(role: UserRole, nav_history: list[str]) -> ReplyKeyboardMark
     )
 
 
+def _should_send_kb(chat_id: int, screen: str, role: UserRole) -> bool:
+    """Проверяем, нужно ли отправлять клавиатуру в этот чат.
+    Возвращает True только если экран или роль изменились."""
+    last = _last_kb_sent.get(chat_id)
+    if last is None:
+        return True
+    last_screen, last_role = last
+    return last_screen != screen or last_role != role.name
+
+
+def _mark_kb_sent(chat_id: int, screen: str, role: UserRole) -> None:
+    """Запоминаем, что клавиатура отправлена для этого чата."""
+    _last_kb_sent[chat_id] = (screen, role.name)
+
+
 class PersistentMenuMiddleware(BaseMiddleware):
     """PostMiddleware: отправляет persistent ReplyKeyboard как обычное сообщение."""
 
@@ -143,28 +161,41 @@ class PersistentMenuMiddleware(BaseMiddleware):
                 break
 
         kb = _build_reply_kb(role, nav_history)
+        screen = nav_history[-1] if nav_history else "main_menu"
 
-        # Отправляем клавиатуру только после сообщений (команд/текста),
-        # не после callback-кликов — там handler сам управляет клавиатурой.
+        # Отправляем клавиатуру только после callback-кликов
+        # (после текстовых сообщений handler сам управляет клавиатурой)
         if isinstance(event, CallbackQuery):
+            if _should_send_kb(chat_id, screen, role):
+                bot: Bot = cast(Bot, data["bot"])
+                try:
+                    await bot.send_message(
+                        chat_id=chat_id,
+                        text=".",
+                        reply_markup=kb,
+                    )
+                    _mark_kb_sent(chat_id, screen, role)
+                    logger.info("PersistentMenu: sent kb user=%s chat=%s screen=%s role=%s",
+                                user_id, chat_id, screen, role.name)
+                except Exception:
+                    logger.exception("Failed to send persistent menu for user %s", user_id)
             return result
 
-        # Получаем бота из data
-        bot: Bot = cast(Bot, data["bot"])
-
-        # Отправляем клавиатуру — Telegram покажет её под полем ввода
-        # ReplyKeyboardMarkup нельзя редактировать через edit_reply_markup,
-        # поэтому всегда отправляем новое сообщение.
-        try:
-            if isinstance(event, (Message, CallbackQuery)):
+        # Для текстовых сообщений (после handler уже отправил экран с клавиатурой)
+        # — проверяем, не отправляли ли мы уже клавиатуру для этого экрана в этом чате.
+        # Если отправляли — не спамим. Если нет (например, /start) — отправляем.
+        if _should_send_kb(chat_id, screen, role):
+            bot: Bot = cast(Bot, data["bot"])
+            try:
                 await bot.send_message(
                     chat_id=chat_id,
                     text=".",
                     reply_markup=kb,
                 )
-                logger.info("PersistentMenu: sent kb user=%s chat=%s role=%s",
-                            user_id, chat_id, role.name)
-        except Exception:
-            logger.exception("Failed to send persistent menu for user %s", user_id)
+                _mark_kb_sent(chat_id, screen, role)
+                logger.info("PersistentMenu: sent kb user=%s chat=%s screen=%s role=%s",
+                            user_id, chat_id, screen, role.name)
+            except Exception:
+                logger.exception("Failed to send persistent menu for user %s", user_id)
 
         return result
