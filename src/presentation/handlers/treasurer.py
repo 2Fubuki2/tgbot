@@ -208,7 +208,7 @@ async def member_payments(callback: CallbackQuery) -> None:
                 fee = fee_by_period.get((p.month, p.year))
                 if fee and p.amount < fee.amount and p.status == PaymentStatus.CONFIRMED:
                     lines.append(
-                        f"{icon} <b>{p.amount:,.2f}₽</b>/{fee.amount:,.2f}₽ "
+                        f"{status_icon} <b>{p.amount:,.2f}₽</b>/{fee.amount:,.2f}₽ "
                         f"{date_str} — {_payment_status_ru(p.status)}"
                     )
                     lines.append(
@@ -218,7 +218,7 @@ async def member_payments(callback: CallbackQuery) -> None:
                     )
                 else:
                     lines.append(
-                        f"{icon} <b>{p.amount:,.2f}₽</b> {date_str}"
+                        f"{status_icon} <b>{p.amount:,.2f}₽</b> {date_str}"
                         f" — {_payment_status_ru(p.status)}"
                     )
             text = "\n".join(lines)
@@ -294,7 +294,7 @@ async def member_payments_for_user(callback: CallbackQuery) -> None:
                 fee = fee_by_period.get((p.month, p.year))
                 if fee and p.amount < fee.amount and p.status == PaymentStatus.CONFIRMED:
                     lines.append(
-                        f"{icon} <b>{p.amount:,.2f}₽</b>/{fee.amount:,.2f}₽ "
+                        f"{status_icon} <b>{p.amount:,.2f}₽</b>/{fee.amount:,.2f}₽ "
                         f"{date_str} — {_payment_status_ru(p.status)}"
                     )
                     lines.append(
@@ -304,7 +304,7 @@ async def member_payments_for_user(callback: CallbackQuery) -> None:
                     )
                 else:
                     lines.append(
-                        f"{icon} <b>{p.amount:,.2f}₽</b> {date_str}"
+                        f"{status_icon} <b>{p.amount:,.2f}₽</b> {date_str}"
                         f" — {_payment_status_ru(p.status)}"
                     )
             text = "\n".join(lines)
