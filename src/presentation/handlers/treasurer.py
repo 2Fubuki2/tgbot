@@ -221,9 +221,7 @@ async def member_payments(callback: CallbackQuery) -> None:
                         f"{status_icon} <b>{p.amount:,.2f}₽</b> {date_str}"
                         f" — {payment_status_ru(p.status)}"
                     )
-            text = "\n".join(lines)
-        else:
-            text = "\n".join(lines)
+        text = "\n".join(lines)
 
         await safe_edit(callback, text, reply_markup=back_keyboard())
     await callback.answer()
@@ -309,9 +307,7 @@ async def member_payments_for_user(callback: CallbackQuery) -> None:
                         f"{status_icon} <b>{p.amount:,.2f}₽</b> {date_str}"
                         f" — {payment_status_ru(p.status)}"
                     )
-            text = "\n".join(lines)
-        else:
-            text = "\n".join(lines)
+        text = "\n".join(lines)
 
         await safe_edit(callback, text, reply_markup=back_keyboard())
     await callback.answer()
@@ -384,9 +380,7 @@ async def member_fees(callback: CallbackQuery) -> None:
                         f"{status_icon} <b>{f.amount:,.2f}₽</b> "
                         f"{f.month:02d}/{f.year} — {f.status.value}"
                     )
-            text = "\n".join(lines)
-        else:
-            text = "\n".join(lines)
+        text = "\n".join(lines)
 
         await safe_edit(callback, text, reply_markup=back_keyboard())
     await callback.answer()
@@ -425,8 +419,6 @@ async def member_fees_for_user(callback: CallbackQuery) -> None:
                         f"{status_icon} <b>{f.amount:,.2f}₽</b> "
                         f"{f.month:02d}/{f.year} — {f.status.value}"
                     )
-            text = "\n".join(lines)
-        else:
             text = "\n".join(lines)
 
         await safe_edit(callback, text, reply_markup=back_keyboard())
