@@ -180,7 +180,7 @@ class PersistentMenuMiddleware(BaseMiddleware):
             try:
                 await bot.send_message(
                     chat_id=chat_id,
-                    text=" ",
+                    text="·",
                     reply_markup=kb,
                 )
                 _mark_kb_sent(chat_id, screen, role)
