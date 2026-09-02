@@ -33,8 +33,11 @@ _INPUT_STATES = {
     "ledger_edit_fee_amount", "ledger_edit_fee_month", "ledger_edit_fee_status",
 }
 
-# Хранилище последнего отправленного экрана по чату — чтобы не спамить "."
+# Хранилище последнего отправленного экрана по чату
 _last_kb_sent: Dict[int, tuple[str, str]] = {}
+
+# Экраны, на которых нужно показывать persistent-кнопки (верхнеуровневые)
+_PERSISTENT_SCREENS = {"main_menu", "my_budget", "club_budget", "admin_management"}
 
 
 def _is_input_state(state) -> bool:
@@ -104,8 +107,7 @@ def _build_reply_kb(role: UserRole, nav_history: list[str]) -> ReplyKeyboardMark
 
 
 def _should_send_kb(chat_id: int, screen: str, role: UserRole) -> bool:
-    """Проверяем, нужно ли отправлять клавиатуру в этот чат.
-    Возвращает True только если экран или роль изменились."""
+    """Нужно ли отправлять клавиатуру в этот чат?"""
     last = _last_kb_sent.get(chat_id)
     if last is None:
         return True
@@ -114,12 +116,17 @@ def _should_send_kb(chat_id: int, screen: str, role: UserRole) -> bool:
 
 
 def _mark_kb_sent(chat_id: int, screen: str, role: UserRole) -> None:
-    """Запоминаем, что клавиатура отправлена для этого чата."""
     _last_kb_sent[chat_id] = (screen, role.name)
 
 
 class PersistentMenuMiddleware(BaseMiddleware):
-    """PostMiddleware: отправляет persistent ReplyKeyboard как обычное сообщение."""
+    """PostMiddleware: отправляет persistent ReplyKeyboard как обычное сообщение.
+
+    Отправляет клавиатуру только:
+    - после /start и /menu (первые сообщения пользователю)
+    - при возврате на верхнеуровневый экран (main_menu, my_budget, club_budget, admin_management)
+    - НЕ отправляет после каждого callback-клика в глубине навигации
+    """
 
     async def __call__(
         self,
@@ -150,6 +157,7 @@ class PersistentMenuMiddleware(BaseMiddleware):
             return result
 
         nav_history = get_nav_history(user_id)
+        screen = nav_history[-1] if nav_history else "main_menu"
 
         # Определяем роль пользователя
         role: UserRole = UserRole.MEMBER
@@ -160,30 +168,13 @@ class PersistentMenuMiddleware(BaseMiddleware):
                 role = user.role
                 break
 
-        kb = _build_reply_kb(role, nav_history)
-        screen = nav_history[-1] if nav_history else "main_menu"
-
-        # Отправляем клавиатуру только после callback-кликов
-        # (после текстовых сообщений handler сам управляет клавиатурой)
-        if isinstance(event, CallbackQuery):
-            if _should_send_kb(chat_id, screen, role):
-                bot: Bot = cast(Bot, data["bot"])
-                try:
-                    await bot.send_message(
-                        chat_id=chat_id,
-                        text=".",
-                        reply_markup=kb,
-                    )
-                    _mark_kb_sent(chat_id, screen, role)
-                    logger.info("PersistentMenu: sent kb user=%s chat=%s screen=%s role=%s",
-                                user_id, chat_id, screen, role.name)
-                except Exception:
-                    logger.exception("Failed to send persistent menu for user %s", user_id)
+        # Если экран не в списке отображения — скрываем клавиатуру (отправляем точку без клавиатуры)
+        if screen not in _PERSISTENT_SCREENS:
             return result
 
-        # Для текстовых сообщений (после handler уже отправил экран с клавиатурой)
-        # — проверяем, не отправляли ли мы уже клавиатуру для этого экрана в этом чате.
-        # Если отправляли — не спамим. Если нет (например, /start) — отправляем.
+        kb = _build_reply_kb(role, nav_history)
+
+        # Отправляем клавиатуру только если экран/роль изменились
         if _should_send_kb(chat_id, screen, role):
             bot: Bot = cast(Bot, data["bot"])
             try:

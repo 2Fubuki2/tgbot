@@ -143,6 +143,7 @@ async def member_payments(callback: CallbackQuery) -> None:
     """Show member's payment history."""
     async for session in get_session():
         user_repo = UserRepository(session)
+        fee_repo = FeeRepository(session)
         pay_repo = PaymentRepository(session)
 
         user = await user_repo.get_by_telegram_id(callback.from_user.id)
