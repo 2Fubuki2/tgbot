@@ -879,7 +879,8 @@ async def admin_assess_now(callback: CallbackQuery) -> None:
 # ─── Казначей: расходы ───────────────────────────
 
 @router.callback_query(F.data == "treasurer_expenses")
-async def expense_menu(callback: CallbackQuery) -> None:
+async def expense_menu(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.clear()
     if not await require_role(callback, UserRole.TREASURER):
         return
     await safe_edit(

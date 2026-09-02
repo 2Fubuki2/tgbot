@@ -27,6 +27,16 @@ _INPUT_STATES = {
     "ledger_edit_fee_amount", "ledger_edit_fee_month", "ledger_edit_fee_status",
 }
 
+# Текст кнопок persistent-панели — навигация, а не ввод данных
+_NAV_TEXTS = {
+    "💰 Мой бюджет",
+    "💼 Бюджет клуба",
+    "👑 Управление",
+}
+
+# Команда, явно скрывающая панель — middleware не должен мешать
+_HIDE_COMMAND = "/hidebutton"
+
 
 def _is_input_state(state) -> bool:
     if state is None:
@@ -35,6 +45,24 @@ def _is_input_state(state) -> bool:
     if not isinstance(state_name, str):
         return False
     return state_name in _INPUT_STATES or any(s in state_name for s in _INPUT_STATES)
+
+
+def _is_navigation_event(event: TelegramObject, state) -> bool:
+    """Return True if this event is a navigation action, not user input."""
+    # Callback navigation
+    if isinstance(event, CallbackQuery):
+        data = event.data or ""
+        if data in ("main_menu", "my_budget", "club_budget", "admin_management",
+                     "back", "cancel_action"):
+            return True
+    # Message-based navigation (persistent panel buttons)
+    if isinstance(event, Message) and event.text:
+        if event.text.strip() in _NAV_TEXTS:
+            return True
+        # Explicit hide command
+        if event.text.strip().lower() == _HIDE_COMMAND:
+            return True
+    return False
 
 
 def build_reply_keyboard(role: UserRole) -> ReplyKeyboardMarkup:
@@ -75,6 +103,7 @@ class PersistentMenuMiddleware(BaseMiddleware):
 
     Управление панелью — через команды /button и /hidebutton.
     Middleware здесь только предотвращает показ панели при вводе.
+    Навигационные события (кнопки меню, /hidebutton) не вызывают скрытие.
     """
 
     async def __call__(
@@ -83,9 +112,9 @@ class PersistentMenuMiddleware(BaseMiddleware):
         event: TelegramObject,
         data: Dict[str, Any],
     ) -> Any:
-        # Скрываем панель во время ввода данных
+        # Скрываем панель только во время ВВОДА данных, не при навигации
         state = data.get("state")
-        if _is_input_state(state):
+        if _is_input_state(state) and not _is_navigation_event(event, state):
             # Отправляем пустую панель — скрываем кнопки
             if isinstance(event, (Message, CallbackQuery)):
                 user_id: int | None = None

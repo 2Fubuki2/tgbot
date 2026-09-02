@@ -143,8 +143,9 @@ async def cmd_help(message: Message) -> None:
 
 
 @router.callback_query(F.data == "main_menu")
-async def callback_main_menu(callback: CallbackQuery) -> None:
+async def callback_main_menu(callback: CallbackQuery, state: FSMContext) -> None:
     """Return to main menu."""
+    await state.clear()
     async for session in get_session():
         repo = UserRepository(session)
         user = await repo.get_by_telegram_id(callback.from_user.id)
@@ -167,8 +168,9 @@ async def callback_main_menu(callback: CallbackQuery) -> None:
 
 
 @router.callback_query(F.data == "my_budget")
-async def callback_my_budget(callback: CallbackQuery) -> None:
+async def callback_my_budget(callback: CallbackQuery, state: FSMContext) -> None:
     """Мой бюджет - личный счёт, платежи, штрафы."""
+    await state.clear()
     from src.presentation.keyboards.common import my_budget_keyboard
 
     async for session in get_session():
@@ -187,8 +189,9 @@ async def callback_my_budget(callback: CallbackQuery) -> None:
 
 
 @router.callback_query(F.data == "club_budget")
-async def callback_club_budget(callback: CallbackQuery) -> None:
+async def callback_club_budget(callback: CallbackQuery, state: FSMContext) -> None:
     """Бюджет клуба - для казначея и админа."""
+    await state.clear()
     from src.presentation.keyboards.common import club_budget_keyboard
 
     async for session in get_session():
@@ -208,8 +211,9 @@ async def callback_club_budget(callback: CallbackQuery) -> None:
 
 # Message handlers for persistent menu buttons (sent as text when clicked)
 @router.message(F.text == "💰 Мой бюджет")
-async def msg_my_budget(message: Message) -> None:
+async def msg_my_budget(message: Message, state: FSMContext) -> None:
     """Handle persistent menu button: 💰 Мой бюджет."""
+    await state.clear()
     from src.presentation.keyboards.common import my_budget_keyboard
 
     async for session in get_session():
@@ -227,8 +231,9 @@ async def msg_my_budget(message: Message) -> None:
 
 
 @router.message(F.text == "💼 Бюджет клуба")
-async def msg_club_budget(message: Message) -> None:
+async def msg_club_budget(message: Message, state: FSMContext) -> None:
     """Handle persistent menu button: 💼 Бюджет клуба."""
+    await state.clear()
     from src.presentation.keyboards.common import club_budget_keyboard
 
     async for session in get_session():
@@ -248,8 +253,9 @@ async def msg_club_budget(message: Message) -> None:
 
 
 @router.callback_query(F.data == "admin_management")
-async def callback_admin_management(callback: CallbackQuery) -> None:
+async def callback_admin_management(callback: CallbackQuery, state: FSMContext) -> None:
     """Управление - только для админа."""
+    await state.clear()
     from src.presentation.keyboards.common import admin_management_keyboard
 
     async for session in get_session():
@@ -276,8 +282,9 @@ async def callback_cancel_action(callback: CallbackQuery, state: FSMContext) -> 
 
 
 @router.callback_query(F.data == "back")
-async def callback_back(callback: CallbackQuery) -> None:
+async def callback_back(callback: CallbackQuery, state: FSMContext) -> None:
     """Generic back — navigate to previous screen or main menu."""
+    await state.clear()
     from src.presentation.middleware.navigation import push_nav, pop_nav
     from src.presentation.handlers.admin import (
         admin_treasury, admin_users, admin_user_list, admin_settings,
@@ -332,15 +339,21 @@ async def callback_back(callback: CallbackQuery) -> None:
     key = previous
     handler = handlers.get(key)
     if handler:
-        await handler(callback)
+        # Pass state to handlers that accept it, skip for others
+        import inspect
+        sig = inspect.signature(handler)
+        if "state" in sig.parameters:
+            await handler(callback, state)
+        else:
+            await handler(callback)
     elif key.startswith("ledger_edit_payment:"):
-        await ledger_edit_payment(callback, FSMContext(None, None))
+        await ledger_edit_payment(callback, state)
     elif key.startswith("ledger_edit_fine:"):
-        await ledger_edit_fine(callback, FSMContext(None, None))
+        await ledger_edit_fine(callback, state)
     elif key.startswith("ledger_edit_fee:"):
-        await ledger_edit_fee(callback, FSMContext(None, None))
+        await ledger_edit_fee(callback, state)
     elif key == "expense_add":
-        await expense_add_start(callback, FSMContext(None, None))
+        await expense_add_start(callback, state)
     elif key.startswith("expense_view:"):
         await expense_view(callback)
     elif key == "treasurer_timeline":
@@ -350,7 +363,7 @@ async def callback_back(callback: CallbackQuery) -> None:
     elif key.startswith("timeline_item:"):
         await timeline_item(callback)
     else:
-        await callback_main_menu(callback)
+        await callback_main_menu(callback, state)
 
 
 @router.message(Command("stop_bot"))
@@ -429,8 +442,9 @@ async def cmd_show_button(message: Message) -> None:
 
 
 @router.message(Command("hidebutton"))
-async def cmd_hide_button(message: Message) -> None:
+async def cmd_hide_button(message: Message, state: FSMContext) -> None:
     """Скрыть persistent-панель кнопок под полем ввода."""
+    await state.clear()
     from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 
     kb = ReplyKeyboardMarkup(
