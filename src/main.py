@@ -42,6 +42,9 @@ def _ensure_missing_columns(bind) -> None:
         "payments": {
             "payment_type": "VARCHAR(20) NOT NULL DEFAULT 'fee'",
         },
+        "expenses": {
+            "updated_at": "TIMESTAMP",
+        },
     }
     for table_name, columns in table_columns.items():
         if table_name not in inspector.get_table_names():
