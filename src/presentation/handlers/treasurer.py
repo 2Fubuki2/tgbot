@@ -96,15 +96,14 @@ async def member_account(callback: CallbackQuery) -> None:
                 unpaid_by_year.setdefault(f.year, []).append(label)
 
         text = (
-            "╔══════════════════════╗\n"
-            "║  📋 <b>Лицевой счёт</b>          ║\n"
-            f"║  👤 {user.full_name:<18}║\n"
-            "╠══════════════════════╣\n"
-            f"║  💰 Взносы:      <b>{fees_total:>9,.2f}₽</b> ║\n"
-            f"║  ⚠️ Штрафы:      <b>{fines_total:>9,.2f}₽</b> ║\n"
-            f"║  💳 Итого:       <b>{total:>9,.2f}₽</b> ║\n"
-            f"║  🔄 Переплата:   <b>{user.balance_credit:>8,.2f}₽</b> ║\n"
-            "╚══════════════════════╝\n"
+            "📋 <b>Лицевой счёт</b>\n"
+            f"👤 <b>{user.full_name}</b>\n"
+            "━━━━━━━━━━━━━━━━\n"
+            f"💰 Взносы: <b>{fees_total:,.2f} ₽</b>\n"
+            f"⚠️ Штрафы: <b>{fines_total:,.2f} ₽</b>\n"
+            f"💳 Итого: <b>{total:,.2f} ₽</b>\n"
+            f"🔄 Переплата: <b>{user.balance_credit:,.2f} ₽</b>\n"
+            "━━━━━━━━━━━━━━━━\n"
         )
 
         # Display months grouped by year
@@ -1276,14 +1275,14 @@ async def show_stats(callback: CallbackQuery) -> None:
         active = await user_repo.count_active()
 
         text = stats_text(
-            f"{balance:,.2f}₽",
-            f"{total_revenue:,.2f}₽",
-            f"{total_expenses:,.2f}₽",
-            f"{adjustment:,.2f}₽",
-            f"{total_debt:,.2f}₽",
+            f"{balance:,.2f} ₽",
+            f"{total_revenue:,.2f} ₽",
+            f"{total_expenses:,.2f} ₽",
+            f"{adjustment:,.2f} ₽",
+            f"{total_debt:,.2f} ₽",
             debtors,
             active,
-            f"{total_active_fines:,.2f}₽",
+            f"{total_active_fines:,.2f} ₽",
         )
         await safe_edit(callback, text, reply_markup=back_keyboard())
     await callback.answer()

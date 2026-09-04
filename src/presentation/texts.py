@@ -27,25 +27,22 @@ def account_statement_text(
     paid_months: list[str],
     unpaid_months: list[str],
 ) -> str:
-    paid_str = "\n".join(f"✅ {m}" for m in paid_months) if paid_months else "Нет оплаченных месяцев"
-    unpaid_str = "\n".join(f"❌ {m}" for m in unpaid_months) if unpaid_months else "Нет долгов"
+    paid_str = "\n".join(f"  ✅ {m}" for m in paid_months) if paid_months else "  Нет оплаченных месяцев"
+    unpaid_str = "\n".join(f"  ❌ {m}" for m in unpaid_months) if unpaid_months else "  Нет долгов"
 
     return (
-        f"╔══════════════════════╗\n"
-        f"║  <b>Лицевой счёт</b>      ║\n"
-        f"║  {full_name}          \n"
-        f"╠══════════════════════╣\n"
-        f"║  Текущий долг: {current_debt}  \n"
-        f"║  Штрафы: {fines_total}        \n"
-        f"║  Итого: {total_due}           \n"
-        f"║  Переплата: {credit}          \n"
-        f"╠══════════════════════╣\n"
-        f"║ <b>Оплаченные месяцы</b>:\n"
-        f"{paid_str}\n"
-        f"║──────────────────────║\n"
-        f"║ <b>Задолженность</b>:\n"
-        f"{unpaid_str}\n"
-        f"╚══════════════════════╝"
+        "📋 <b>Лицевой счёт</b>\n"
+        f"👤 <b>{full_name}</b>\n"
+        "━━━━━━━━━━━━━━━━\n"
+        f"💰 Текущий долг: <b>{current_debt}</b>\n"
+        f"⚠️ Штрафы: <b>{fines_total}</b>\n"
+        f"💳 Итого: <b>{total_due}</b>\n"
+        f"🔄 Переплата: <b>{credit}</b>\n"
+        "━━━━━━━━━━━━━━━━\n"
+        "<b>Оплаченные месяцы</b>:\n"
+        f"{paid_str}\n\n"
+        "<b>Задолженность</b>:\n"
+        f"{unpaid_str}"
     )
 
 
@@ -109,19 +106,18 @@ def stats_text(
     fines_total: str,
 ) -> str:
     return (
-        f"╔══════════════════════╗\n"
-        f"║  📊 <b>Статистика казны</b>       ║\n"
-        f"╠══════════════════════╣\n"
-        f"║  💰 Баланс:        <b>{balance:<10}</b> ║\n"
-        f"║  📈 Поступления:   <b>{revenue:<10}</b> ║\n"
-        f"║  📉 Расходы:       <b>{expenses:<10}</b> ║\n"
-        f"║  🔧 Коррекция:     <b>{adjustment:<10}</b> ║\n"
-        f"╠══════════════════════╣\n"
-        f"║  📌 Долг клуба:    <b>{debt:<10}</b> ║\n"
-        f"║  👥 Должников:     <b>{debtors_count!s:<12}</b> ║\n"
-        f"║  👤 Активных:      <b>{active_members!s:<12}</b> ║\n"
-        f"║  ⚠️ Штрафов:       <b>{fines_total:<10}</b> ║\n"
-        f"╚══════════════════════╝"
+        "📊 <b>Статистика казны</b>\n"
+        "━━━━━━━━━━━━━━━━\n"
+        f"💰 Баланс: <b>{balance}</b>\n"
+        f"📈 Поступления: <b>{revenue}</b>\n"
+        f"📉 Расходы: <b>{expenses}</b>\n"
+        f"🔧 Коррекция: <b>{adjustment}</b>\n"
+        "━━━━━━━━━━━━━━━━\n"
+        f"📌 Долг клуба: <b>{debt}</b>\n"
+        f"👥 Должников: <b>{debtors_count}</b>\n"
+        f"👤 Активных: <b>{active_members}</b>\n"
+        f"⚠️ Штрафов: <b>{fines_total}</b>\n"
+        "━━━━━━━━━━━━━━━━"
     )
 
 
