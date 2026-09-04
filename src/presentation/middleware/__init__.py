@@ -1,7 +1,7 @@
 """Middleware для бота."""
 
-from .navigation import NavigationMiddleware
 from .bot_status import BotStatusMiddleware
+from .navigation import NavigationMiddleware
 from .persistent_menu import PersistentMenuMiddleware
 
-__all__ = ["NavigationMiddleware", "BotStatusMiddleware", "PersistentMenuMiddleware"]
+__all__ = ["BotStatusMiddleware", "NavigationMiddleware", "PersistentMenuMiddleware"]

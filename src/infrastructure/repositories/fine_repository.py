@@ -21,7 +21,7 @@ class FineRepository(IFineRepository):
             id=model.id,
             user_id=model.user_id,
             amount=model.__dict__.get('amount'),
-            paid_amount=model.__dict__.get('paid_amount', Decimal('0')),
+            paid_amount=model.__dict__.get('paid_amount', Decimal(0)),
             reason=model.__dict__.get('reason'),
             comment=model.__dict__.get('comment'),
             issued_by=model.__dict__.get('issued_by'),
@@ -117,4 +117,4 @@ class FineRepository(IFineRepository):
             FineModel.status == FineStatus.ACTIVE.value
         )
         result = await self.session.execute(stmt)
-        return result.scalar() or Decimal("0")
+        return result.scalar() or Decimal(0)

@@ -6,17 +6,23 @@ from __future__ import annotations
 
 import io
 import os
-from datetime import datetime
 from decimal import Decimal
 
-from reportlab.lib.pagesizes import A4
-from reportlab.lib.units import mm
-from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib import colors
 from reportlab.lib.enums import TA_CENTER
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+from reportlab.lib.units import mm
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
-from reportlab.lib import colors
+from reportlab.platypus import (
+    PageBreak,
+    Paragraph,
+    SimpleDocTemplate,
+    Spacer,
+    Table,
+    TableStyle,
+)
 
 _FONT_NORMAL = "ClubFont"
 _FONT_BOLD = "ClubFontBold"
@@ -24,7 +30,7 @@ _FONT_BOLD = "ClubFontBold"
 
 def _register_font():
     """Register a font that supports Cyrillic. Tries multiple paths."""
-    if _FONT_NORMAL in pdfmetrics.fontNames:
+    if _FONT_NORMAL in pdfmetrics.getRegisteredFontNames():
         return
 
     paths = [
@@ -32,6 +38,7 @@ def _register_font():
         "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
         os.path.join(os.environ.get("WINDIR", "C:/Windows"), "Fonts", "arial.ttf"),
         os.path.join(os.environ.get("WINDIR", "C:/Windows"), "Fonts", "ARIAL.TTF"),
+        os.path.join(os.environ.get("WINDIR", "C:/Windows"), "Fonts", "arialbd.ttf"),
         os.path.join(os.environ.get("WINDIR", "C:/Windows"), "Fonts", "ARIALBD.TTF"),
     ]
     for path in paths:
@@ -39,7 +46,7 @@ def _register_font():
             if os.path.exists(path):
                 pdfmetrics.registerFont(TTFont(_FONT_NORMAL, path))
                 # Bold: same path but subfontIndex=1, or find a bold variant
-                bold_path = path.replace(".ttf", "BD.ttf") if "arial" in path.lower() else path
+                bold_path = path.lower().replace("arial.ttf", "arialbd.ttf") if "arial" in path.lower() else path
                 if not os.path.exists(bold_path):
                     bold_path = path.replace("DejaVuSans.ttf", "DejaVuSans-Bold.ttf")
                 if os.path.exists(bold_path):
@@ -54,8 +61,9 @@ def _register_font():
 def _get_styles():
     """Create paragraph styles using the registered font."""
     _register_font()
-    f_normal = _FONT_NORMAL if _FONT_NORMAL in pdfmetrics.fontNames else "Helvetica"
-    f_bold = _FONT_BOLD if _FONT_BOLD in pdfmetrics.fontNames else "Helvetica-Bold"
+    reg = pdfmetrics.getRegisteredFontNames()
+    f_normal = _FONT_NORMAL if _FONT_NORMAL in reg else "Helvetica"
+    f_bold = _FONT_BOLD if _FONT_BOLD in reg else "Helvetica-Bold"
 
     styles = getSampleStyleSheet()
     styles.add(ParagraphStyle(name="TitleRU", fontName=f_bold, fontSize=18,
@@ -94,7 +102,7 @@ def generate_export_pdf(
     # ── Заголовок ──
     from src.infrastructure.timezone import now_msk
     now_str = now_msk().strftime("%d %B %Y")
-    elements.append(Paragraph(f"<b>Отчёт клуба</b>", styles["TitleRU"]))
+    elements.append(Paragraph("<b>Отчёт клуба</b>", styles["TitleRU"]))
     elements.append(Paragraph(f"Дата формирования: {now_str}", styles["BodyRU"]))
     elements.append(Spacer(1, 6 * mm))
 
@@ -108,7 +116,7 @@ def generate_export_pdf(
                 str(u.telegram_id or ""),
                 (u.full_name or "")[:20],
                 u.role.value if hasattr(u.role, "value") else str(u.role),
-                f"{u.balance_credit or Decimal('0'):.2f}₽",
+                f"{u.balance_credit or Decimal(0):.2f}₽",
             ])
         t = Table(user_rows, colWidths=[18 * mm, 28 * mm, 50 * mm, 25 * mm, 30 * mm])
         t.setStyle(TableStyle([
@@ -135,7 +143,7 @@ def generate_export_pdf(
         for p in payments[:100]:  # limit to 100
             pay_rows.append([
                 str(p.id or ""),
-                f"{p.amount or Decimal('0'):.2f}₽",
+                f"{p.amount or Decimal(0):.2f}₽",
                 f"{p.year}-{p.month:02d}" if p.year else "",
                 "штраф" if (p.payment_type or "") == "fine" else "взнос",
                 p.status.value if hasattr(p.status, "value") else str(p.status),
@@ -166,7 +174,7 @@ def generate_export_pdf(
         for f in fines[:100]:
             fine_rows.append([
                 str(f.id or ""),
-                f"{f.amount or Decimal('0'):.2f}₽",
+                f"{f.amount or Decimal(0):.2f}₽",
                 (f.reason or "")[:40],
                 f.status.value if hasattr(f.status, "value") else str(f.status),
             ])
@@ -195,7 +203,7 @@ def generate_export_pdf(
         for e in expenses[:100]:
             exp_rows.append([
                 str(e.id or ""),
-                f"{e.amount or Decimal('0'):.2f}₽",
+                f"{e.amount or Decimal(0):.2f}₽",
                 e.category.value if hasattr(e.category, "value") else str(e.category),
                 e.expense_date.isoformat() if e.expense_date else "",
                 (e.comment or "")[:40],

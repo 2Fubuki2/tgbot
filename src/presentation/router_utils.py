@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from aiogram import Router
 from aiogram.types import Message
 from sqlalchemy.ext.asyncio import AsyncSession
 

@@ -7,9 +7,10 @@ from datetime import date
 from decimal import Decimal, InvalidOperation
 from html import escape
 
-from aiogram import Router, F
+from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
-from aiogram.types import BufferedInputFile, CallbackQuery, InputFile, Message
+from aiogram.types import BufferedInputFile, CallbackQuery, Message
+from sqlalchemy import select
 
 from src.domain.entities.audit_log import AuditLog
 from src.domain.entities.expense import Expense
@@ -17,16 +18,15 @@ from src.domain.entities.user import User
 from src.domain.value_objects.expense_category import ExpenseCategory
 from src.domain.value_objects.role import UserRole
 from src.domain.value_objects.user_status import UserStatus
+from src.infrastructure.database.models.audit_log import AuditLogModel
 from src.infrastructure.database.session import get_session
 from src.infrastructure.repositories.audit_repository import AuditLogRepository
-from src.infrastructure.database.models.audit_log import AuditLogModel
-from src.presentation.export_pdf import generate_export_pdf
-from sqlalchemy import select
 from src.infrastructure.repositories.expense_repository import ExpenseRepository
 from src.infrastructure.repositories.fine_repository import FineRepository
 from src.infrastructure.repositories.payment_repository import PaymentRepository
 from src.infrastructure.repositories.settings_repository import ClubSettingsRepository
 from src.infrastructure.repositories.user_repository import UserRepository
+from src.presentation.export_pdf import generate_export_pdf
 from src.presentation.keyboards.common import (
     admin_settings_keyboard,
     admin_users_list_keyboard,
@@ -39,20 +39,16 @@ from src.presentation.keyboards.common import (
     main_menu_keyboard,
     user_actions_keyboard,
 )
-from src.presentation.handlers.common import callback_main_menu
-from src.presentation.texts import (
-    ACCESS_DENIED,
-)
-from src.presentation.utils import FakeCallback, safe_edit, require_role
 from src.presentation.states import (
     AddUserStates,
     BroadcastStates,
-    ExpenseStates,
     ExpenseEditStates,
+    ExpenseStates,
+    RenameUserStates,
     SettingsStates,
     TreasuryAdjustStates,
-    RenameUserStates,
 )
+from src.presentation.utils import FakeCallback, require_role, safe_edit
 
 router = Router()
 logger = logging.getLogger(__name__)
@@ -804,14 +800,17 @@ async def admin_assess_now(callback: CallbackQuery) -> None:
     if not await require_role(callback, UserRole.ADMIN):
         return
     from datetime import datetime
-    from src.infrastructure.timezone import now_msk
-    from src.infrastructure.repositories.user_repository import UserRepository
-    from src.infrastructure.repositories.fee_repository import FeeRepository
-    from src.infrastructure.repositories.settings_repository import ClubSettingsRepository
-    from src.infrastructure.repositories.audit_repository import AuditLogRepository
+
+    from src.domain.entities.audit_log import AuditLog
     from src.domain.entities.monthly_fee import MonthlyFee
     from src.domain.value_objects.fee_status import FeeStatus
-    from src.domain.entities.audit_log import AuditLog
+    from src.infrastructure.repositories.audit_repository import AuditLogRepository
+    from src.infrastructure.repositories.fee_repository import FeeRepository
+    from src.infrastructure.repositories.settings_repository import (
+        ClubSettingsRepository,
+    )
+    from src.infrastructure.repositories.user_repository import UserRepository
+    from src.infrastructure.timezone import now_msk
 
     async for session in get_session():
         user_repo = UserRepository(session)
@@ -822,16 +821,7 @@ async def admin_assess_now(callback: CallbackQuery) -> None:
         members = await user_repo.list_active()
         now = now_msk()
 
-        # Check if already assessed
-        existing = await fee_repo.list_by_month(now.month, now.year)
-        if existing:
-            await safe_edit(callback,
-                f"ℹ️ Взносы за {now.month:02d}/{now.year} уже начислены ({len(existing)} участников).",
-                reply_markup=back_keyboard(),
-            )
-            return
-
-        assessed = 0
+        assessed_members = []
         for member in members:
             if not await fee_repo.get_by_user_month(member.id, now.month, now.year):
                 fee = MonthlyFee(
@@ -842,9 +832,18 @@ async def admin_assess_now(callback: CallbackQuery) -> None:
                     status=FeeStatus.PENDING,
                 )
                 await fee_repo.create(fee)
-                assessed += 1
+                assessed_members.append(member)
 
-        await settings_repo.update(last_fee_assessment=datetime(now.year, now.month, 1))
+        assessed = len(assessed_members)
+        if assessed == 0:
+            await safe_edit(
+                callback,
+                f"ℹ️ Взносы за {now.month:02d}/{now.year} уже начислены всем активным участникам ({len(members)}).",
+                reply_markup=back_keyboard(),
+            )
+            return
+
+        await settings_repo.update(last_fee_assessment=now.replace(day=1, hour=0, minute=0, second=0, microsecond=0))
 
         actor = await user_repo.get_by_telegram_id(callback.from_user.id)
         if actor:
@@ -855,8 +854,8 @@ async def admin_assess_now(callback: CallbackQuery) -> None:
                 details={"count": assessed, "month": now.month, "year": now.year, "amount": str(monthly_fee)},
             ))
 
-        # Notify members
-        for member in members:
+        # Notify only newly assessed members
+        for member in assessed_members:
             try:
                 await callback.bot.send_message(
                     member.telegram_id,
@@ -1010,7 +1009,7 @@ async def expense_list(callback: CallbackQuery) -> None:
                 reply_markup=back_keyboard(),
             )
         else:
-            total = sum((e.amount for e in expenses), Decimal("0"))
+            total = sum((e.amount for e in expenses), Decimal(0))
             lines = [f"💸 <b>Расходы клуба</b> (всего: {total:,.2f}₽)\n"]
             kb_rows = []
             for e in expenses[:20]:
@@ -1098,7 +1097,7 @@ async def expense_edit_amount(message: Message, state: FSMContext) -> None:
         await state.clear()
         await message.answer("❌ Отменено")
         return
-    data = await state.get_data()
+    await state.get_data()
     if message.text.strip().lower() == "/skip":
         await state.set_state(ExpenseEditStates.waiting_category)
         await message.answer(
@@ -1164,12 +1163,12 @@ async def expense_edit_comment(message: Message, state: FSMContext) -> None:
         await state.clear()
         await message.answer("❌ Отменено")
         return
-    data = await state.get_data()
+    await state.get_data()
     new_comment = "" if message.text.strip().lower() == "/skip" else message.text.strip()
     await state.update_data(edit_comment=new_comment)
     await state.set_state(ExpenseEditStates.waiting_date)
     await message.answer(
-        f"Введите <b>дату</b> в формате ГГГГ-ММ-ДД (или /skip для текущей):",
+        "Введите <b>дату</b> в формате ГГГГ-ММ-ДД (или /skip для текущей):",
         reply_markup=confirm_cancel_keyboard("expense_save_edit", "back"),
     )
 
@@ -1182,7 +1181,7 @@ async def expense_edit_date(message: Message, state: FSMContext) -> None:
         await state.clear()
         await message.answer("❌ Отменено")
         return
-    data = await state.get_data()
+    await state.get_data()
     if message.text.strip().lower() == "/skip":
         new_date = date.today()
     else:

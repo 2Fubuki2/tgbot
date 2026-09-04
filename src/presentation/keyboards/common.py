@@ -351,7 +351,6 @@ _MONTH_SHORT = ["янв", "фев", "мар", "апр", "май", "июн",
 
 def persistent_menu_keyboard(role, nav_history):
     """Построить контекстную панель быстрых кнопок внизу экрана."""
-    from src.presentation.middleware.navigation import _nav_stack
 
     current = nav_history[-1] if nav_history else "main_menu"
 

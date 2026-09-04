@@ -9,7 +9,7 @@ from src.domain.value_objects.payment_status import PaymentStatus
 class Payment:
     id: int | None = None
     user_id: int = 0
-    amount: Decimal = Decimal("0")
+    amount: Decimal = Decimal(0)
     payment_date: date | None = None
     month: int = 0
     year: int = 0

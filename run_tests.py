@@ -1,19 +1,17 @@
-"""Test runner script for tgbot project."""
+"""Test runner script for TreasuryBot."""
 import sys
-sys.path.insert(0, 'D:/tgbot')
+from pathlib import Path
 
 import pytest
 
 if __name__ == "__main__":
-    # Run all non-integration tests first
+    root_dir = Path(__file__).resolve().parent
+    sys.path.insert(0, str(root_dir))
+
     result = pytest.main([
-        '-v',
-        '--tb=short',
-        'tests/test_domain.py',
-        'tests/test_logger.py',
-        'tests/test_export.py',
-        'tests/test_navigation_export.py',
+        "-v",
+        "--tb=short",
+        str(root_dir / "tests"),
     ])
-    print(f"\n{'='*60}")
-    print(f"Tests completed with exit code: {result}")
-    print(f"{'='*60}")
+    sys.exit(int(result))
+

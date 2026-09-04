@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import logging
 import re
-from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
+
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
@@ -19,16 +19,14 @@ from src.infrastructure.repositories.user_repository import UserRepository
 from src.infrastructure.timezone import now_msk, today_msk
 from src.presentation.keyboards.common import (
     back_keyboard,
-    build_kb,
     confirm_cancel_keyboard,
     main_menu_keyboard,
     payment_action_keyboard,
     payment_month_keyboard,
     payment_type_keyboard,
 )
-from src.presentation.handlers.common import callback_main_menu
 from src.presentation.states import PaymentStates
-from src.presentation.utils import safe_edit, require_role, require_treasurer_or_admin
+from src.presentation.utils import require_treasurer_or_admin, safe_edit
 
 router = Router()
 logger = logging.getLogger(__name__)
@@ -158,7 +156,7 @@ async def member_pay_amount(message: Message, state: FSMContext) -> None:
 
     await state.set_state(PaymentStates.waiting_month)
     await message.answer(
-        f"📅 За какой <b>месяц</b> платите?",
+        "📅 За какой <b>месяц</b> платите?",
         reply_markup=payment_month_keyboard(now.year, now.month),
     )
 
@@ -211,7 +209,7 @@ async def pay_month_year_click(callback: CallbackQuery, state: FSMContext) -> No
     await state.update_data(pay_year=year)
     await safe_edit(
         callback,
-        f"📅 За какой <b>месяц</b> платите?",
+        "📅 За какой <b>месяц</b> платите?",
         reply_markup=payment_month_keyboard(year, month),
     )
     await callback.answer()
@@ -225,7 +223,7 @@ async def pay_month_current_year(callback: CallbackQuery, state: FSMContext) -> 
     month = int(data.get("pay_month", now_msk().month))
     await safe_edit(
         callback,
-        f"📅 За какой <b>месяц</b> платите?",
+        "📅 За какой <b>месяц</b> платите?",
         reply_markup=payment_month_keyboard(year, month),
     )
     await callback.answer()
@@ -340,8 +338,15 @@ async def _pay_finalize(user_id: int, bot, state: FSMContext) -> None:
 
         _MONTHS_RU = ["января","февраля","марта","апреля","мая","июня",
                        "июля","августа","сентября","октября","ноября","декабря"]
+        _MONTHS_NOM_RU = ["Январь","Февраль","Март","Апрель","Май","Июнь",
+                           "Июль","Август","Сентябрь","Октябрь","Ноябрь","Декабрь"]
         pay_dt = today_msk()
-        pay_date_str = f"{pay_dt.day} {_MONTHS_RU[pay_dt.month - 1]} {pay_dt.year} года"
+        if payment_type == "fine":
+            period_line = f"📅 Дата: {pay_dt.day} {_MONTHS_RU[pay_dt.month - 1]} {pay_dt.year} года\n"
+        else:
+            p_month = data.get("pay_month", pay_dt.month)
+            p_year = data.get("pay_year", pay_dt.year)
+            period_line = f"📅 За: {_MONTHS_NOM_RU[p_month - 1]} {p_year} года\n"
 
         # Build detailed payer info: Name (@username) — Role
         if user:
@@ -359,17 +364,23 @@ async def _pay_finalize(user_id: int, bot, state: FSMContext) -> None:
             f"📤 <b>Новый платёж</b>\n"
             f"👤 {payer_info}\n"
             f"💰 Сумма: <b>{data['pay_amount']:,.2f}₽</b>\n"
-            f"📅 За: {pay_date_str}\n"
+            f"{period_line}"
         )
         if payment_type == "fine":
-            notify_text += f"📌 <b>Тип: Оплата штрафа</b>\n"
+            notify_text += "📌 <b>Тип: Оплата штрафа</b>\n"
         if comment:
             notify_text += f"💬 {comment}\n"
         notify_text += f"\n🆔 Платёж #{created.id}"
 
         kb = payment_action_keyboard(int(created.id) if created and created.id is not None else 0)
 
-        for t in treasurers + admins:
+        # Deduplicate recipients by telegram_id
+        recipients = {}
+        for staff in treasurers + admins:
+            if staff.telegram_id:
+                recipients[staff.telegram_id] = staff
+
+        for t in recipients.values():
             try:
                 # Send photo with caption and keyboard if receipt exists
                 if data.get("pay_receipt"):

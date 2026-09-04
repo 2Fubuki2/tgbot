@@ -7,12 +7,10 @@ and feeds them to the aiogram dispatcher.
 
 import asyncio
 import logging
-import sys
 
 from flask import Flask, jsonify, request
 
 from src.config.logger import setup_logging
-from src.config.settings import settings
 from src.infrastructure.database.base import Base
 from src.infrastructure.database.session import engine
 from src.presentation.bot import create_bot, create_dispatcher

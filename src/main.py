@@ -5,25 +5,23 @@ Entry point for polling mode (local development) and webhook mode (production).
 """
 
 import asyncio
+import calendar
 import logging
-import os
 
 from aiogram.utils.backoff import BackoffConfig
 from sqlalchemy import inspect, text
 
 from src.config.logger import setup_logging
-from src.config.settings import settings
-from src.infrastructure.database.base import Base
-from src.infrastructure.database.session import engine, get_session
-from src.infrastructure.repositories.user_repository import UserRepository
-from src.infrastructure.repositories.fee_repository import FeeRepository
-from src.infrastructure.repositories.settings_repository import ClubSettingsRepository
-from src.infrastructure.repositories.audit_repository import AuditLogRepository
+from src.domain.entities.audit_log import AuditLog
 from src.domain.entities.monthly_fee import MonthlyFee
 from src.domain.value_objects.fee_status import FeeStatus
-from src.domain.entities.audit_log import AuditLog
+from src.infrastructure.database.base import Base
+from src.infrastructure.database.session import engine, get_session
+from src.infrastructure.repositories.audit_repository import AuditLogRepository
+from src.infrastructure.repositories.fee_repository import FeeRepository
+from src.infrastructure.repositories.settings_repository import ClubSettingsRepository
+from src.infrastructure.repositories.user_repository import UserRepository
 from src.infrastructure.timezone import now_msk
-from src.presentation.utils import safe_edit
 from src.presentation.bot import create_bot, create_dispatcher
 
 logger = logging.getLogger(__name__)
@@ -66,7 +64,6 @@ async def on_startup() -> None:
 
 async def _daily_fee_assessment_task(bot) -> None:
     """Background task: check daily if fee assessment day has arrived."""
-    from datetime import datetime, timedelta
     while True:
         await asyncio.sleep(60)  # check every minute near midnight
         now = now_msk()
@@ -85,7 +82,9 @@ async def _daily_fee_assessment_task(bot) -> None:
             except Exception:
                 break
 
-            if day != now.day:
+            max_day = calendar.monthrange(now.year, now.month)[1]
+            target_day = min(day, max_day)
+            if target_day != now.day:
                 break
 
             # Check if already assessed this month
@@ -113,7 +112,7 @@ async def _daily_fee_assessment_task(bot) -> None:
                         await fee_repo.create(fee)
                         assessed += 1
 
-                await settings_repo.update(last_fee_assessment=datetime(now.year, now.month, 1))
+                await settings_repo.update(last_fee_assessment=now_msk().replace(day=1, hour=0, minute=0, second=0, microsecond=0))
 
                 # Audit
                 await audit_repo.create(AuditLog(

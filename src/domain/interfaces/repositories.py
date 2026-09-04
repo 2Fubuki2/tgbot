@@ -7,9 +7,7 @@ from src.domain.entities.fine import Fine
 from src.domain.entities.monthly_fee import MonthlyFee
 from src.domain.entities.payment import Payment
 from src.domain.entities.user import User
-from src.domain.value_objects.payment_status import PaymentStatus
 from src.domain.value_objects.role import UserRole
-from src.domain.value_objects.user_status import UserStatus
 
 
 class IUserRepository(ABC):

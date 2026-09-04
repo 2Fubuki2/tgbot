@@ -16,6 +16,6 @@ class User:
     status: UserStatus = UserStatus.ACTIVE
     joined_at: datetime | None = None
     phone: str | None = None
-    balance_credit: Decimal = Decimal("0")
+    balance_credit: Decimal = Decimal(0)
     created_at: datetime | None = None
     updated_at: datetime | None = None

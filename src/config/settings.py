@@ -11,6 +11,7 @@ class Settings(BaseSettings):
 
     # Telegram
     bot_token: str
+    proxy_url: str | None = None
 
     # Database
     database_url: str = "sqlite+aiosqlite:///./treasurybot.db"

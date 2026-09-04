@@ -2,24 +2,17 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime
 from decimal import Decimal
 
-from aiogram import Router, F
+from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
-from sqlalchemy import delete
 
 from src.domain.entities.audit_log import AuditLog
-from src.domain.entities.fine import Fine
-from src.domain.entities.monthly_fee import MonthlyFee
-from src.domain.entities.payment import Payment
 from src.domain.value_objects.fee_status import FeeStatus
 from src.domain.value_objects.fine_status import FineStatus
 from src.domain.value_objects.payment_status import PaymentStatus
 from src.domain.value_objects.role import UserRole
-
-from src.infrastructure.database.models.monthly_fee import MonthlyFeeModel
 from src.infrastructure.database.session import get_session
 from src.infrastructure.repositories.audit_repository import AuditLogRepository
 from src.infrastructure.repositories.fee_repository import FeeRepository
@@ -28,12 +21,16 @@ from src.infrastructure.repositories.payment_repository import PaymentRepository
 from src.infrastructure.repositories.settings_repository import ClubSettingsRepository
 from src.infrastructure.repositories.user_repository import UserRepository
 from src.infrastructure.timezone import now_msk
-from src.presentation.keyboards.common import back_keyboard, build_kb, confirm_cancel_keyboard
+from src.presentation.keyboards.common import (
+    back_keyboard,
+    build_kb,
+    confirm_cancel_keyboard,
+)
 from src.presentation.utils import (
-    require_role,
-    payment_status_ru,
     fee_status_ru,
     fine_status_ru,
+    payment_status_ru,
+    require_role,
 )
 
 router = Router()
@@ -43,15 +40,14 @@ logger = logging.getLogger(__name__)
 # ─── Пересчёт баланса пользователя из истории ────────────────────────────
 
 async def _recalculate_balance(session, user_id: int) -> Decimal:
-    """Пересчитать balance_credit пользователя из всех подтверждённых fee-платежей, оплаченных взносов и поправки кассы."""
+    """Пересчитать balance_credit пользователя из всех подтверждённых fee-платежей и оплаченных взносов."""
     pay_repo = PaymentRepository(session)
     fee_repo = FeeRepository(session)
-    settings_repo = ClubSettingsRepository(session)
 
     user_payments = await pay_repo.list_by_user(user_id)
     user_fees = await fee_repo.list_by_user(user_id)
 
-    balance = Decimal("0")
+    balance = Decimal(0)
     for p in user_payments:
         if p.status == PaymentStatus.CONFIRMED and p.payment_type == "fee":
             balance += p.amount
@@ -62,13 +58,7 @@ async def _recalculate_balance(session, user_id: int) -> Decimal:
         elif f.paid_amount > 0:
             balance -= f.paid_amount
 
-    try:
-        adjustment = await settings_repo.get_treasury_adjustment()
-        balance += adjustment
-    except Exception:
-        pass
-
-    return max(balance, Decimal("0"))
+    return max(balance, Decimal(0))
 
 
 async def _recalculate_fine_paid_amounts(session, user_id: int) -> None:
@@ -80,7 +70,7 @@ async def _recalculate_fine_paid_amounts(session, user_id: int) -> None:
     fines = await fine_repo.list_by_user(user_id)
     for fine in fines:
         if fine.status == FineStatus.ACTIVE:
-            fine.paid_amount = Decimal("0")
+            fine.paid_amount = Decimal(0)
             await fine_repo.update(fine)
 
     # Re-apply confirmed fine payments
@@ -94,7 +84,7 @@ async def _recalculate_fine_paid_amounts(session, user_id: int) -> None:
                 alloc = min(remaining, fine.remaining_amount)
                 if alloc <= 0:
                     continue
-                fine.paid_amount = (fine.paid_amount or Decimal("0")) + alloc
+                fine.paid_amount = (fine.paid_amount or Decimal(0)) + alloc
                 if fine.paid_amount >= fine.amount:
                     fine.status = FineStatus.CANCELLED
                     fine.cancelled_at = now_msk()
@@ -163,7 +153,6 @@ async def ledger_payment_view(callback: CallbackQuery) -> None:
             await callback.answer("❌ Платёж не найден", show_alert=True)
             return
         date_str = payment.payment_date.strftime('%d.%m.%Y') if payment.payment_date else f'{payment.month:02d}/{payment.year}'
-        comment_part = f" | {payment.comment}" if payment.comment else ""
         await callback.message.edit_text(
             f"💳 <b>Платёж #{payment_id}</b>\n"
             f"👤 Пользователь: <code>{payment.user_id}</code>\n"
@@ -222,7 +211,7 @@ async def ledger_edit_payment_amount(message: Message, state: FSMContext) -> Non
         await state.clear()
         await message.answer("❌ Отменено")
         return
-    data = await state.get_data()
+    await state.get_data()
     if message.text.strip().lower() == "/skip":
         await state.set_state("ledger_edit_payment_month")
         await message.answer("Введите <b>месяц</b> (1-12) или /skip:", reply_markup=confirm_cancel_keyboard("ledger_save_payment", "ledger_cancel_edit"))
@@ -270,7 +259,7 @@ async def ledger_edit_payment_month(message: Message, state: FSMContext) -> None
 async def ledger_edit_payment_comment(message: Message, state: FSMContext) -> None:
     if message.text is None:
         return
-    data = await state.get_data()
+    await state.get_data()
     new_comment = "" if message.text.strip().lower() == "/skip" else message.text.strip()
     await state.update_data(edit_comment=new_comment)
     await _save_edit_payment(message, state)
@@ -533,7 +522,7 @@ async def ledger_edit_fine_reason(message: Message, state: FSMContext) -> None:
 async def ledger_edit_fine_comment(message: Message, state: FSMContext) -> None:
     if message.text is None:
         return
-    data = await state.get_data()
+    await state.get_data()
     new_comment = "" if message.text.strip().lower() == "/skip" else message.text.strip()
     await state.update_data(edit_fine_comment=new_comment)
     await _save_edit_fine(message, state)

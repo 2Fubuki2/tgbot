@@ -1,4 +1,3 @@
-from src.config.settings import settings
 
 # ─── Главное меню ──────────────────────────────────
 MENU_MAIN = "🏠 Главное меню"
@@ -119,8 +118,8 @@ def stats_text(
         f"║  🔧 Коррекция:     <b>{adjustment:<10}</b> ║\n"
         f"╠══════════════════════╣\n"
         f"║  📌 Долг клуба:    <b>{debt:<10}</b> ║\n"
-        f"║  👥 Должников:     <b>{str(debtors_count):<12}</b> ║\n"
-        f"║  👤 Активных:      <b>{str(active_members):<12}</b> ║\n"
+        f"║  👥 Должников:     <b>{debtors_count!s:<12}</b> ║\n"
+        f"║  👤 Активных:      <b>{active_members!s:<12}</b> ║\n"
         f"║  ⚠️ Штрафов:       <b>{fines_total:<10}</b> ║\n"
         f"╚══════════════════════╝"
     )

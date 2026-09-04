@@ -2,14 +2,13 @@ from __future__ import annotations
 
 from decimal import Decimal
 
-from sqlalchemy import case, func, or_, select
+from sqlalchemy import cast, func, or_, select, String
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
 
 from src.domain.entities.user import User
 from src.domain.interfaces.repositories import IUserRepository
-from src.domain.value_objects.fine_status import FineStatus
 from src.domain.value_objects.fee_status import FeeStatus
+from src.domain.value_objects.fine_status import FineStatus
 from src.domain.value_objects.role import UserRole
 from src.domain.value_objects.user_status import UserStatus
 from src.infrastructure.database.models.fine import FineModel
@@ -32,7 +31,7 @@ class UserRepository(IUserRepository):
             status=UserStatus(model.status) if hasattr(model, 'status') and model.status is not None else UserStatus.ACTIVE,
             joined_at=model.__dict__.get('joined_at'),
             phone=model.__dict__.get('phone'),
-            balance_credit=model.__dict__.get('balance_credit') if 'balance_credit' in model.__dict__ else Decimal('0'),
+            balance_credit=model.__dict__.get('balance_credit') if 'balance_credit' in model.__dict__ else Decimal(0),
             created_at=model.__dict__.get('created_at'),
             updated_at=model.__dict__.get('updated_at'),
         )
@@ -111,7 +110,7 @@ class UserRepository(IUserRepository):
             or_(
                 UserModel.full_name.ilike(pattern),
                 UserModel.username.ilike(pattern),
-                func.cast(UserModel.telegram_id, str).ilike(pattern),
+                cast(UserModel.telegram_id, String).ilike(pattern),
             )
         ).order_by(UserModel.full_name)
         result = await self.session.execute(stmt)
@@ -133,7 +132,7 @@ class UserRepository(IUserRepository):
         result = await self.session.execute(stmt)
         model = result.scalar_one_or_none()
         if model:
-            self.session.delete(model)
+            await self.session.delete(model)
             await self.session.flush()
 
     async def count_active(self) -> int:

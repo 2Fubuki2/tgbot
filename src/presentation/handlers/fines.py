@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime
 from decimal import Decimal, InvalidOperation
 
 from aiogram import F, Router
@@ -15,13 +14,17 @@ from src.domain.value_objects.role import UserRole
 from src.infrastructure.database.session import get_session
 from src.infrastructure.repositories.audit_repository import AuditLogRepository
 from src.infrastructure.repositories.fine_repository import FineRepository
-from src.infrastructure.repositories.user_repository import UserRepository
 from src.infrastructure.repositories.settings_repository import ClubSettingsRepository
-from src.presentation.keyboards.common import back_keyboard, build_kb, confirm_cancel_keyboard, main_menu_keyboard
-from src.presentation.handlers.common import callback_main_menu
+from src.infrastructure.repositories.user_repository import UserRepository
 from src.infrastructure.timezone import now_msk
-from src.presentation.utils import FakeCallback, safe_edit, require_role
+from src.presentation.keyboards.common import (
+    back_keyboard,
+    build_kb,
+    confirm_cancel_keyboard,
+    main_menu_keyboard,
+)
 from src.presentation.states import FineStates
+from src.presentation.utils import FakeCallback, require_role, safe_edit
 
 router = Router()
 logger = logging.getLogger(__name__)

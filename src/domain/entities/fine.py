@@ -9,8 +9,8 @@ from src.domain.value_objects.fine_status import FineStatus
 class Fine:
     id: int | None = None
     user_id: int = 0
-    amount: Decimal = Decimal("0")
-    paid_amount: Decimal = Decimal("0")
+    amount: Decimal = Decimal(0)
+    paid_amount: Decimal = Decimal(0)
     reason: str = ""
     comment: str | None = None
     issued_by: int = 0
@@ -22,4 +22,4 @@ class Fine:
 
     @property
     def remaining_amount(self) -> Decimal:
-        return max(self.amount - self.paid_amount, Decimal("0"))
+        return max(self.amount - self.paid_amount, Decimal(0))

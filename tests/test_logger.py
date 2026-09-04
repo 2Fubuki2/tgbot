@@ -75,9 +75,10 @@ def test_setup_logging_production_mode():
         webhook_domain = "https://example.com"
         webhook_path = "/webhook"
 
+    dummy_stream = io.StringIO()
+    real_handler = logging.StreamHandler(dummy_stream)
     with patch("src.config.logger.settings", ProdSettings()):
-        with patch("src.config.logger.logging.StreamHandler") as mock_handler:
-            mock_handler.return_value = logging.StreamHandler(io.StringIO())
+        with patch("src.config.logger.logging.StreamHandler", return_value=real_handler):
             setup_logging()
 
     root = logging.getLogger()

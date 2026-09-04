@@ -29,13 +29,17 @@ class ExpenseRepository(IExpenseRepository):
 
     @staticmethod
     def _to_model(entity: Expense) -> ExpenseModel:
+        exp_date = entity.expense_date
+        if isinstance(exp_date, str):
+            from datetime import date
+            exp_date = date.fromisoformat(exp_date)
         return ExpenseModel(
             id=entity.id,
             amount=entity.amount,
             category=entity.category.value if entity.category else ExpenseCategory.OTHER.value,
             comment=entity.comment,
             created_by=entity.created_by,
-            expense_date=entity.expense_date,
+            expense_date=exp_date,
         )
 
     async def get_by_id(self, expense_id: int) -> Expense | None:
@@ -61,7 +65,11 @@ class ExpenseRepository(IExpenseRepository):
         model.category = expense.category.value if expense.category else ExpenseCategory.OTHER.value
         model.comment = expense.comment
         model.created_by = expense.created_by
-        model.expense_date = expense.expense_date
+        if isinstance(expense.expense_date, str):
+            from datetime import date
+            model.expense_date = date.fromisoformat(expense.expense_date)
+        else:
+            model.expense_date = expense.expense_date
         await self.session.flush()
         return self._to_domain(model)
 
@@ -84,4 +92,4 @@ class ExpenseRepository(IExpenseRepository):
     async def total_amount(self) -> Decimal:
         stmt = select(func.coalesce(func.sum(ExpenseModel.amount), 0))
         result = await self.session.execute(stmt)
-        return result.scalar() or Decimal("0")
+        return result.scalar() or Decimal(0)

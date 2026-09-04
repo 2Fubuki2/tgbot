@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-from aiogram import Router, F
+from pathlib import Path
+
+from aiogram import F, Router
+from aiogram.enums import ChatType
 from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, Message
-from sqlalchemy.ext.asyncio import AsyncSession
-import asyncio
+from aiogram.types import CallbackQuery, Message, ReplyKeyboardMarkup
 
 from src.config.settings import settings
 from src.domain.value_objects.role import UserRole
@@ -13,11 +14,14 @@ from src.domain.value_objects.user_status import UserStatus
 from src.infrastructure.database.session import get_session
 from src.infrastructure.repositories.user_repository import UserRepository
 from src.presentation.keyboards.common import main_menu_keyboard
-from src.presentation.router_utils import register_or_get_user
-from src.presentation.utils import safe_edit, record_bot_message
 from src.presentation.middleware.persistent_menu import build_reply_keyboard
+from src.presentation.router_utils import register_or_get_user
+from src.presentation.utils import record_bot_message, safe_edit
 
 router = Router()
+
+# Путь к баннеру — лежит рядом с проектом, генерируется скриптом scripts/gen_banner.py
+_BANNER_PATH = Path(__file__).resolve().parent.parent.parent.parent / "assets" / "banner.png"
 
 
 @router.message(CommandStart())
@@ -201,8 +205,8 @@ async def callback_club_budget(callback: CallbackQuery, state: FSMContext) -> No
     if user and user.role in (UserRole.TREASURER, UserRole.ADMIN):
         await safe_edit(
             callback,
-            f"💼 <b>Бюджет клуба</b>\n\n"
-            f"Управление взносами, платежами, штрафами и расходами клуба.",
+            "💼 <b>Бюджет клуба</b>\n\n"
+            "Управление взносами, платежами, штрафами и расходами клуба.",
             reply_markup=club_budget_keyboard(),
         )
     else:
@@ -242,8 +246,8 @@ async def msg_club_budget(message: Message, state: FSMContext) -> None:
 
     if user and user.role in (UserRole.TREASURER, UserRole.ADMIN):
         sent = await message.answer(
-            f"💼 <b>Бюджет клуба</b>\n\n"
-            f"Управление взносами, платежами, штрафами и расходами клуба.",
+            "💼 <b>Бюджет клуба</b>\n\n"
+            "Управление взносами, платежами, штрафами и расходами клуба.",
             reply_markup=club_budget_keyboard(),
         )
         record_bot_message(sent.chat.id, sent.message_id)
@@ -264,8 +268,8 @@ async def msg_admin_management(message: Message, state: FSMContext) -> None:
 
     if user and user.role == UserRole.ADMIN:
         sent = await message.answer(
-            f"👑 <b>Управление клубом</b>\n\n"
-            f"Пользователи, настройки, журнал действий и экспорт данных.",
+            "👑 <b>Управление клубом</b>\n\n"
+            "Пользователи, настройки, журнал действий и экспорт данных.",
             reply_markup=admin_management_keyboard(),
         )
         record_bot_message(sent.chat.id, sent.message_id)
@@ -287,8 +291,8 @@ async def callback_admin_management(callback: CallbackQuery, state: FSMContext) 
     if user and user.role == UserRole.ADMIN:
         await safe_edit(
             callback,
-            f"👑 <b>Управление клубом</b>\n\n"
-            f"Пользователи, настройки, журнал действий и экспорт данных.",
+            "👑 <b>Управление клубом</b>\n\n"
+            "Пользователи, настройки, журнал действий и экспорт данных.",
             reply_markup=admin_management_keyboard(),
         )
     else:
@@ -307,26 +311,45 @@ async def callback_cancel_action(callback: CallbackQuery, state: FSMContext) -> 
 async def callback_back(callback: CallbackQuery, state: FSMContext) -> None:
     """Generic back — navigate to previous screen or main menu."""
     await state.clear()
-    from src.presentation.middleware.navigation import push_nav, pop_nav
     from src.presentation.handlers.admin import (
-        admin_treasury, admin_users, admin_user_list, admin_settings,
-        admin_stats, admin_log, admin_export, expense_menu, expense_list,
-        expense_add_start, expense_view,
-    )
-    from src.presentation.handlers.treasurer import (
-        list_pending_payments, list_members, show_stats, send_reminders,
-        member_account, member_payments, member_fines, member_fees, member_details,
-        member_fees_for_user, treasurer_timeline, timeline_user, timeline_item,
+        admin_export,
+        admin_log,
+        admin_settings,
+        admin_stats,
+        admin_treasury,
+        admin_user_list,
+        admin_users,
+        expense_add_start,
+        expense_list,
+        expense_menu,
+        expense_view,
     )
     from src.presentation.handlers.fines import treasurer_fines
     from src.presentation.handlers.ledger_edit import (
-        ledger_edit_payment, ledger_edit_fine, ledger_edit_fee,
+        ledger_edit_fee,
+        ledger_edit_fine,
+        ledger_edit_payment,
     )
+    from src.presentation.handlers.treasurer import (
+        list_members,
+        list_pending_payments,
+        member_account,
+        member_details,
+        member_fees,
+        member_fees_for_user,
+        member_fines,
+        member_payments,
+        send_reminders,
+        show_stats,
+        timeline_item,
+        timeline_user,
+        treasurer_timeline,
+    )
+    from src.presentation.middleware.navigation import pop_nav, push_nav
 
     previous = pop_nav(callback.from_user.id)
 
     # Re-push previous screen so middleware doesn't duplicate it when handler runs
-    from src.presentation.middleware.navigation import push_nav
     push_nav(callback.from_user.id, previous)
 
     # Map callback_data to handler functions

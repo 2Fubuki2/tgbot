@@ -2,60 +2,47 @@
 
 import importlib
 import logging
+from functools import partial as _partial
 
 from aiogram import Bot, Dispatcher, exceptions
 from aiogram.client.default import DefaultBotProperties
+
+# Monkey-patch FilterObject.call to workaround Python 3.13 TypeError
+from aiogram.dispatcher.event.handler import FilterObject
 from aiogram.enums import ParseMode
 from aiogram.types import BotCommand, CallbackQuery, ErrorEvent, Message
 
-# Monkey-patch FilterObject.call to debug and workaround Python 3.13 TypeError
-import sys as _sys
-print(f"[DEBUG] Applying FilterObject.call patch (Python {_sys.version_info.major}.{_sys.version_info.minor})", flush=True)
-from aiogram.dispatcher.event.handler import FilterObject
-from functools import partial as _partial
 _original_filter_call = FilterObject.call
 
-async def _debug_filter_call(self, *args, **kwargs):
+async def _patched_filter_call(self, *args, **kwargs):
     callback = self.callback
-    print(f"[DEBUG] FilterObject.call: callback={callback!r} type={type(callback).__name__} callable={callable(callback)}", flush=True)
 
     # Workaround for Python 3.13: wrap non-callable callbacks
     if not callable(callback):
-        print(f"[DEBUG] FilterObject.call: NON-CALLABLE CALLBACK! Wrapping...", flush=True)
-        # Try to extract the underlying function if it's a bound method
         if hasattr(callback, "__func__"):
             callback = callback.__func__
-            print(f"[DEBUG] Extracted __func__: {callback!r}", flush=True)
-        elif hasattr(callback, "__call__"):
+        elif callable(callback):
             callback = callback.__call__
-            print(f"[DEBUG] Extracted __call__: {callback!r}", flush=True)
         else:
-            # Last resort: create a wrapper that tries to call the original
             original_callback = callback
             async def _wrapper(*a, **k):
                 try:
                     return await original_callback(*a, **k)
                 except Exception as e:
-                    print(f"[DEBUG] Wrapper error: {e}", flush=True)
-                    raise
+                    raise RuntimeError(f"Non-callable callback wrapper failed: {e}") from e
             callback = _wrapper
-            print(f"[DEBUG] Created wrapper: {callback!r}", flush=True)
 
-    # Create partial with the (possibly wrapped) callback
     try:
         wrapped = _partial(callback, *args, **self._prepare_kwargs(kwargs))
     except TypeError as e:
-        print(f"[DEBUG] partial() failed: {e}", flush=True)
-        print(f"[DEBUG] callback type: {type(callback)}, repr: {callback!r}", flush=True)
-        raise
+        raise TypeError(f"Cannot create partial for callback {callback!r}: {e}") from e
 
     if self.awaitable:
         return await wrapped()
     import asyncio
     return await asyncio.to_thread(wrapped)
 
-FilterObject.call = _debug_filter_call
-print(f"[DEBUG] FilterObject.call patch applied successfully", flush=True)
+FilterObject.call = _patched_filter_call
 
 from src.config.settings import settings
 from src.presentation.handlers import (
@@ -119,19 +106,25 @@ def create_dispatcher() -> Dispatcher:
     dp = Dispatcher()
 
     # Register middleware
-    from src.presentation.middleware import NavigationMiddleware, BotStatusMiddleware, PersistentMenuMiddleware
+    from src.presentation.middleware import (
+        BotStatusMiddleware,
+        NavigationMiddleware,
+        PersistentMenuMiddleware,
+    )
 
     persistent_menu_middleware = PersistentMenuMiddleware()
     navigation_middleware = NavigationMiddleware()
     bot_status_middleware = BotStatusMiddleware()
 
-    # Order matters: navigation first, then bot status, then persistent menu last
+    # Navigation и bot status — обычные (внутренние) middleware для message/callback
     dp.message.middleware(navigation_middleware)
     dp.message.middleware(bot_status_middleware)
-    dp.message.middleware(persistent_menu_middleware)
     dp.callback_query.middleware(navigation_middleware)
     dp.callback_query.middleware(bot_status_middleware)
-    dp.callback_query.middleware(persistent_menu_middleware)
+
+    # Persistent menu — outer middleware: оборачивает ВСЕ события,
+    # выполняет post-processing (восстановление панели) после handler'а
+    dp.update.outer_middleware(persistent_menu_middleware)
 
     # Store middleware globally for access from handlers
     global _bot_status_middleware
@@ -162,8 +155,16 @@ def get_bot_status_middleware():
 
 
 def create_bot() -> Bot:
-    """Create the bot instance."""
+    """Create the bot instance with optional proxy support."""
+    session = None
+    if settings.proxy_url:
+        from aiogram.client.session.aiohttp import AiohttpSession
+
+        session = AiohttpSession(proxy=settings.proxy_url)
+
     return Bot(
         token=settings.bot_token,
+        session=session,
         default=DefaultBotProperties(parse_mode=ParseMode.HTML),
     )
+

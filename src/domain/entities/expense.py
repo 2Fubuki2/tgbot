@@ -8,7 +8,7 @@ from src.domain.value_objects.expense_category import ExpenseCategory
 @dataclass
 class Expense:
     id: int | None = None
-    amount: Decimal = Decimal("0")
+    amount: Decimal = Decimal(0)
     category: ExpenseCategory = ExpenseCategory.OTHER
     comment: str | None = None
     created_by: int = 0

@@ -49,7 +49,7 @@ async def engine() -> AsyncEngine:
         pool_pre_ping=True,
     )
     # Enable foreign keys for SQLite
-    @event.listens_for(eng, "connect")
+    @event.listens_for(eng.sync_engine, "connect")
     def _set_foreign_keys(dbapi_conn, connection_record):
         cursor = dbapi_conn.cursor()
         cursor.execute("PRAGMA foreign_keys=ON")

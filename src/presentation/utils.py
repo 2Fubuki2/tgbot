@@ -29,9 +29,10 @@ def get_last_bot_message_id(chat_id: int) -> int | None:
     return _last_bot_msg_ids.get(chat_id)
 
 if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
+
     from src.domain.entities.fine import Fine
     from src.domain.entities.monthly_fee import MonthlyFee
-    from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = logging.getLogger(__name__)
 
@@ -65,18 +66,17 @@ def fine_status_ru(status: FineStatus) -> str:
 
 async def compute_overdue(
     session: AsyncSession, threshold_days: int = 15,
-) -> tuple[list[tuple["MonthlyFee", int]], list[tuple["Fine", int]]]:
+) -> tuple[list[tuple[MonthlyFee, int]], list[tuple[Fine, int]]]:
     """Return (overdue_fees, overdue_fines) where each item is (entity, days_overdue)."""
-    from datetime import date as date_cls
     from src.infrastructure.repositories.fee_repository import FeeRepository
     from src.infrastructure.repositories.fine_repository import FineRepository
-    from .timezone import today_msk
+    from src.infrastructure.timezone import today_msk
 
     today = today_msk()
     fee_repo = FeeRepository(session)
     fine_repo = FineRepository(session)
 
-    overdue_fees: list[tuple["MonthlyFee", int]] = []
+    overdue_fees: list[tuple[MonthlyFee, int]] = []
     for fee in await fee_repo.list_all_pending():
         if fee.remaining_amount <= 0:
             continue
@@ -87,7 +87,7 @@ async def compute_overdue(
         if days >= threshold_days:
             overdue_fees.append((fee, days))
 
-    overdue_fines: list[tuple["Fine", int]] = []
+    overdue_fines: list[tuple[Fine, int]] = []
     for fine in await fine_repo.list_active():
         if fine.remaining_amount <= 0:
             continue

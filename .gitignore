@@ -36,10 +36,16 @@ logs/
 .DS_Store
 Thumbs.db
 
-# Testing
+# Testing & Linting
 .pytest_cache/
+.ruff_cache/
+.mypy_cache/
 .coverage
 htmlcov/
+
+# AI & Editor tooling
+.agents/
+.claude/
 
 # Railway
 .railway/

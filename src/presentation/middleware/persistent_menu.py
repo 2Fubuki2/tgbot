@@ -3,66 +3,35 @@
 Команды:
   /button  — показать панель (reply к последнему сообщению бота, без пузыря)
   /hidebutton — скрыть панель (пустая reply-панель)
+
+Панель всегда видна, кроме явного /hidebutton.
+Восстанавливается после каждого сообщения — Telegram клиент скрывает
+панель при фокусе на поле ввода, но она возвращается сразу после обработки.
 """
 
 from __future__ import annotations
 
-from typing import Any, Awaitable, Callable, Dict
+import logging
+from collections.abc import Awaitable, Callable
+from typing import Any
 
 from aiogram import BaseMiddleware
-from aiogram.types import CallbackQuery, Message, ReplyKeyboardMarkup, KeyboardButton, TelegramObject
+from aiogram.types import (
+    KeyboardButton,
+    Message,
+    ReplyKeyboardMarkup,
+    TelegramObject,
+)
 
 from src.domain.value_objects.role import UserRole
 
+logger = logging.getLogger(__name__)
 
-# FSM-состояния, в которых пользователь вводит данные — панель скрываем
-_INPUT_STATES = {
-    "waiting_amount", "waiting_month", "waiting_receipt", "waiting_comment",
-    "waiting_reason", "waiting_category", "waiting_date",
-    "waiting_fee", "waiting_details", "waiting_club_name", "waiting_assessment_day",
-    "waiting_telegram_id", "waiting_full_name", "waiting_role",
-    "waiting_period", "waiting_adjustment", "waiting_new_name", "waiting_text",
-    "ledger_edit_payment_amount", "ledger_edit_payment_month", "ledger_edit_payment_comment",
-    "ledger_edit_fine_amount", "ledger_edit_fine_reason", "ledger_edit_fine_comment",
-    "ledger_edit_fee_amount", "ledger_edit_fee_month", "ledger_edit_fee_status",
-}
-
-# Текст кнопок persistent-панели — навигация, а не ввод данных
-_NAV_TEXTS = {
-    "💰 Мой бюджет",
-    "💼 Бюджет клуба",
-    "👑 Управление",
-}
-
-# Команда, явно скрывающая панель — middleware не должен мешать
+# Текст команд persistent-панели
 _HIDE_COMMAND = "/hidebutton"
 
-
-def _is_input_state(state) -> bool:
-    if state is None:
-        return False
-    state_name = state.state if hasattr(state, "state") else str(state)
-    if not isinstance(state_name, str):
-        return False
-    return state_name in _INPUT_STATES or any(s in state_name for s in _INPUT_STATES)
-
-
-def _is_navigation_event(event: TelegramObject, state) -> bool:
-    """Return True if this event is a navigation action, not user input."""
-    # Callback navigation
-    if isinstance(event, CallbackQuery):
-        data = event.data or ""
-        if data in ("main_menu", "my_budget", "club_budget", "admin_management",
-                     "back", "cancel_action"):
-            return True
-    # Message-based navigation (persistent panel buttons)
-    if isinstance(event, Message) and event.text:
-        if event.text.strip() in _NAV_TEXTS:
-            return True
-        # Explicit hide command
-        if event.text.strip().lower() == _HIDE_COMMAND:
-            return True
-    return False
+# Множество ID чатов, где панель явно скрыта (через /hidebutton)
+_hidden_chats: set[int] = set()
 
 
 def build_reply_keyboard(role: UserRole) -> ReplyKeyboardMarkup:
@@ -98,42 +67,99 @@ def build_reply_keyboard(role: UserRole) -> ReplyKeyboardMarkup:
     )
 
 
-class PersistentMenuMiddleware(BaseMiddleware):
-    """PostMiddleware: скрывает панель во время ввода данных.
+def hide_keyboard(chat_id: int) -> None:
+    """Пометить чат как скрытый (панель не должна восстанавливаться)."""
+    _hidden_chats.add(chat_id)
 
-    Управление панелью — через команды /button и /hidebutton.
-    Middleware здесь только предотвращает показ панели при вводе.
-    Навигационные события (кнопки меню, /hidebutton) не вызывают скрытие.
+
+def show_keyboard(chat_id: int) -> None:
+    """Снять блокировку скрытия для чата."""
+    _hidden_chats.discard(chat_id)
+
+
+def is_keyboard_hidden(chat_id: int) -> bool:
+    """Проверка, скрыта ли панель для чата."""
+    return chat_id in _hidden_chats
+
+
+class PersistentMenuMiddleware(BaseMiddleware):
+    """OuterMiddleware: восстанавливает persistent панель после каждого сообщения.
+
+    Регистрируется на dp.update.outer_middleware(), поэтому оборачивает
+    обработку ВСЕХ событий. Для сообщений выполняет post-processing:
+    после завершения handler панель отправляется заново, если не скрыта
+    командой /hidebutton.
     """
 
     async def __call__(
         self,
-        handler: Callable[[TelegramObject, Dict[str, Any]], Awaitable[Any]],
+        handler: Callable[[TelegramObject, dict[str, Any]], Awaitable[Any]],
         event: TelegramObject,
-        data: Dict[str, Any],
+        data: dict[str, Any],
     ) -> Any:
-        # Скрываем панель только во время ВВОДА данных, не при навигации
-        state = data.get("state")
-        if _is_input_state(state) and not _is_navigation_event(event, state):
-            # Отправляем пустую панель — скрываем кнопки
-            if isinstance(event, (Message, CallbackQuery)):
-                user_id: int | None = None
-                bot = data.get("bot")
-                if isinstance(event, Message):
-                    user_id = event.from_user.id if event.from_user else None
-                elif isinstance(event, CallbackQuery):
-                    user_id = event.from_user.id
-                if user_id and bot:
-                    empty_kb = ReplyKeyboardMarkup(
-                        keyboard=[],
-                        resize_keyboard=True,
-                        one_time_keyboard=False,
-                        is_persistent=True,
-                    )
-                    chat_id = event.chat.id if isinstance(event, Message) else (event.message.chat.id if event.message else None)
-                    if chat_id:
-                        try:
-                            await bot.send_message(chat_id, "", reply_markup=empty_kb)
-                        except Exception:
-                            pass
-        return await handler(event, data)
+        # Работаем только с входящими сообщениями
+        if not isinstance(event, Message):
+            return await handler(event, data)
+
+        chat_id = event.chat.id
+        user_id = event.from_user.id if event.from_user else None
+
+        # Команда /hidebutton — скрываем панель и пропускаем handler
+        if event.text and event.text.strip().lower() == _HIDE_COMMAND:
+            hide_keyboard(chat_id)
+            return await handler(event, data)
+
+        # Команда /button — показываем панель, пропускаем handler
+        if event.text and event.text.strip().lower() == "/button":
+            show_keyboard(chat_id)
+            return await handler(event, data)
+
+        # Обычное сообщение: запускаем handler, затем восстанавливаем панель
+        was_hidden = is_keyboard_hidden(chat_id)
+        result = await handler(event, data)
+
+        # Восстанавливаем панель после handler, если она не скрыта
+        if not was_hidden and not is_keyboard_hidden(chat_id):
+            await self._restore_keyboard(event, data, user_id=user_id)
+
+        return result
+
+    async def _restore_keyboard(
+        self,
+        event: Message,
+        data: dict[str, Any],
+        user_id: int | None = None,
+    ) -> None:
+        """Отправить persistent панель в чат."""
+        bot = data.get("bot")
+        if not bot:
+            return
+
+        chat_id = event.chat.id
+        if is_keyboard_hidden(chat_id):
+            return
+
+        # Определяем роль пользователя для кнопок
+        role = UserRole.MEMBER  # default
+        if user_id is not None:
+            try:
+                from src.infrastructure.database.session import (
+                    get_session,
+                )
+                from src.infrastructure.repositories.user_repository import (
+                    UserRepository,
+                )
+                async for session in get_session():
+                    repo = UserRepository(session)
+                    user = await repo.get_by_telegram_id(user_id)
+                    if user and user.role in UserRole:
+                        role = user.role
+                        break
+            except Exception:
+                logger.warning("Failed to lookup user role for keyboard", exc_info=True)
+
+        kb = build_reply_keyboard(role)
+        try:
+            await bot.send_message(chat_id, "", reply_markup=kb)
+        except Exception:
+            logger.warning("Failed to send persistent keyboard", exc_info=True)

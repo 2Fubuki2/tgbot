@@ -122,7 +122,7 @@ class PaymentRepository(IPaymentRepository):
             PaymentModel.status == PaymentStatus.CONFIRMED.value
         )
         result = await self.session.execute(stmt)
-        return result.scalar() or Decimal("0")
+        return result.scalar() or Decimal(0)
 
     async def count_pending(self) -> int:
         stmt = select(func.count(PaymentModel.id)).where(

@@ -21,7 +21,7 @@ class FeeRepository(IFeeRepository):
             id=model.id,
             user_id=model.user_id,
             amount=model.__dict__.get('amount'),
-            paid_amount=model.__dict__.get('paid_amount', Decimal('0')),
+            paid_amount=model.__dict__.get('paid_amount', Decimal(0)),
             month=model.__dict__.get('month'),
             year=model.__dict__.get('year'),
             status=FeeStatus(model.__dict__.get('status')) if model.__dict__.get('status') is not None else FeeStatus.PENDING,
@@ -117,7 +117,7 @@ class FeeRepository(IFeeRepository):
             MonthlyFeeModel.amount > MonthlyFeeModel.paid_amount,
         )
         result = await self.session.execute(stmt)
-        return result.scalar() or Decimal("0")
+        return result.scalar() or Decimal(0)
 
     async def delete(self, fee_id: int) -> None:
         await self.session.execute(delete(MonthlyFeeModel).where(MonthlyFeeModel.id == fee_id))

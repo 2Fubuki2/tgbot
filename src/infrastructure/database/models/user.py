@@ -20,7 +20,7 @@ class UserModel(Base):
     status: Mapped[str] = mapped_column(String(20), default=UserStatus.ACTIVE)
     joined_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     phone: Mapped[str | None] = mapped_column(String(20), nullable=True)
-    balance_credit: Mapped[Decimal] = mapped_column(Numeric(10, 2), default=Decimal("0"))
+    balance_credit: Mapped[Decimal] = mapped_column(Numeric(10, 2), default=Decimal(0))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()

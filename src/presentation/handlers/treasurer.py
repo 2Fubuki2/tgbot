@@ -1,65 +1,51 @@
 from __future__ import annotations
 
-from datetime import datetime
 import logging
-from decimal import Decimal
+import re
+from datetime import datetime
+from decimal import Decimal, InvalidOperation
 
-from aiogram import Router, F
+from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
 
-from src.config.settings import settings
-from src.domain.value_objects.payment_status import PaymentStatus
-from src.domain.value_objects.role import UserRole
+from src.domain.entities.audit_log import AuditLog
+from src.domain.entities.fine import Fine
+from src.domain.entities.monthly_fee import MonthlyFee
 from src.domain.value_objects.fee_status import FeeStatus
 from src.domain.value_objects.fine_status import FineStatus
-
+from src.domain.value_objects.payment_status import PaymentStatus
+from src.domain.value_objects.role import UserRole
 from src.infrastructure.database.session import get_session
-from src.infrastructure.database.models.user import UserModel
-from src.infrastructure.database.models.monthly_fee import MonthlyFeeModel
-from src.infrastructure.database.models.fine import FineModel
-from src.infrastructure.database.models.payment import PaymentModel
-from src.infrastructure.database.models.settings import ClubSettingsModel
-from src.infrastructure.repositories.user_repository import UserRepository
+from src.infrastructure.repositories.audit_repository import AuditLogRepository
 from src.infrastructure.repositories.fee_repository import FeeRepository
 from src.infrastructure.repositories.fine_repository import FineRepository
 from src.infrastructure.repositories.payment_repository import PaymentRepository
 from src.infrastructure.repositories.settings_repository import ClubSettingsRepository
-from src.infrastructure.repositories.audit_repository import AuditLogRepository
-from src.domain.entities.audit_log import AuditLog
-from src.domain.entities.monthly_fee import MonthlyFee
+from src.infrastructure.repositories.user_repository import UserRepository
+from src.infrastructure.timezone import now_msk, today_msk
 from src.presentation.keyboards.common import (
-    main_menu_keyboard,
-    members_list_keyboard,
-    member_detail_keyboard,
-    member_detail_admin_keyboard,
-    payment_action_keyboard,
+    assess_fees_keyboard,
     back_keyboard,
     build_kb,
-    assess_fees_keyboard,
+    confirm_cancel_keyboard,
     fine_allocation_keyboard,
+    member_detail_admin_keyboard,
+    member_detail_keyboard,
+    members_list_keyboard,
     timeline_user_select_keyboard,
 )
 from src.presentation.states import AssessFeesStates
-from src.domain.entities.payment import Payment
 from src.presentation.texts import (
-    pending_payment_text,
-    fee_assessment_result,
-    no_fee_needed,
     debt_reminder_text,
+    fee_assessment_result,
     stats_text,
 )
-from src.infrastructure.timezone import now_msk, today_msk
 from src.presentation.utils import (
+    payment_status_ru,
+    require_treasurer_or_admin,
     safe_edit,
     send_text_replacing_photo,
-    require_role,
-    require_treasurer_or_admin,
-    payment_status_ru,
-    fee_status_ru,
-    fine_status_ru,
 )
 
 router = Router()
@@ -78,15 +64,15 @@ async def member_account(callback: CallbackQuery) -> None:
         fine_repo = FineRepository(session)
 
         user = await user_repo.get_by_telegram_id(callback.from_user.id)
-        if not user or user.id is None or user.id is None:
+        if not user or user.id is None:
             await callback.answer("❌ Не найден")
             return
 
         fees = await fee_repo.list_pending_by_user(user.id)
         fines = await fine_repo.list_active_by_user(user.id)
 
-        fees_total = sum((f.remaining_amount for f in fees), Decimal("0"))
-        fines_total = sum((f.remaining_amount for f in fines), Decimal("0"))
+        fees_total = sum((f.remaining_amount for f in fees), Decimal(0))
+        fines_total = sum((f.remaining_amount for f in fines), Decimal(0))
         total = fees_total + fines_total
 
         all_fees = await fee_repo.list_by_user(user.id)
@@ -163,7 +149,7 @@ async def member_payments(callback: CallbackQuery) -> None:
         for p in payments:
             if p.status == PaymentStatus.CONFIRMED:
                 key = (p.month, p.year)
-                paid_by_period[key] = paid_by_period.get(key, Decimal("0")) + p.amount
+                paid_by_period[key] = paid_by_period.get(key, Decimal(0)) + p.amount
 
         # Периоды с текущим долгом (отсортированы: новые сначала)
         owed_periods = sorted(
@@ -184,7 +170,7 @@ async def member_payments(callback: CallbackQuery) -> None:
             lines.append(f"📅 <b>{year}</b>")
             for month in months:
                 fee = fee_by_period[(month, year)]
-                paid = paid_by_period.get((month, year), Decimal("0"))
+                paid = paid_by_period.get((month, year), Decimal(0))
                 if fee.status == FeeStatus.PAID:
                     lines.append(f"  ✅ {month:02d} — <b>{fee.amount:,.2f}₽</b> оплачен")
                 elif paid > 0:
@@ -233,6 +219,7 @@ async def member_payments_for_user(callback: CallbackQuery) -> None:
     user_id = int((callback.data or "").split(":")[1])
     async for session in get_session():
         user_repo = UserRepository(session)
+        fee_repo = FeeRepository(session)
         pay_repo = PaymentRepository(session)
 
         user = await user_repo.get_by_id(user_id)
@@ -251,7 +238,7 @@ async def member_payments_for_user(callback: CallbackQuery) -> None:
         for p in payments:
             if p.status == PaymentStatus.CONFIRMED:
                 key = (p.month, p.year)
-                paid_by_period[key] = paid_by_period.get(key, Decimal("0")) + p.amount
+                paid_by_period[key] = paid_by_period.get(key, Decimal(0)) + p.amount
 
         owed_periods = sorted(
             [(m, y) for (m, y), f in fee_by_period.items() if f.remaining_amount > 0],
@@ -271,7 +258,7 @@ async def member_payments_for_user(callback: CallbackQuery) -> None:
             lines.append(f"📅 <b>{year}</b>")
             for month in months:
                 fee = fee_by_period[(month, year)]
-                paid = paid_by_period.get((month, year), Decimal("0"))
+                paid = paid_by_period.get((month, year), Decimal(0))
                 if fee.status == FeeStatus.PAID:
                     lines.append(f"  ✅ {month:02d} — <b>{fee.amount:,.2f}₽</b> оплачен")
                 elif paid > 0:
@@ -661,11 +648,12 @@ async def _assess_fees_for_period(
     force: bool = False,
 ) -> None:
     """Assess fees for a specific month/year with optional custom amount and comment."""
-    from aiogram.types import CallbackQuery, Message
     from datetime import datetime
 
+    from aiogram.types import CallbackQuery
+
     is_callback = isinstance(source, CallbackQuery)
-    bot = source.bot if is_callback else source.bot
+    bot = source.bot
     user_id = source.from_user.id
 
     async for session in get_session():
@@ -682,7 +670,7 @@ async def _assess_fees_for_period(
                 f"⚠️ Взносы за {month:02d}/{year} уже начислены ({len(existing_fees)} участников).\n"
                 f"Начислить повторно? Будут созданы взносы только для участников без взноса за этот период."
             )
-            kb = build_kb([
+            build_kb([
                 [("✅ Да, начислить повторно", f"assess_force:{month}:{year}")],
                 [("❌ Отмена", "back")],
             ])
@@ -714,7 +702,7 @@ async def _assess_fees_for_period(
             await fee_repo.create(fee)
             assessed_count += 1
 
-        await settings_repo.update(last_fee_assessment=datetime(year, month, 1))
+        await settings_repo.update(last_fee_assessment=now_msk().replace(year=year, month=month, day=1, hour=0, minute=0, second=0, microsecond=0))
 
         # Audit log
         user = await user_repo.get_by_telegram_id(user_id)
@@ -747,7 +735,7 @@ async def _assess_fees_for_period(
                     if comment:
                         notify_text += f"💬 {comment}\n"
                     notify_text += f"\n📋 <b>Реквизиты для оплаты:</b>\n{payment_details}\n\n"
-                    notify_text += f"Оплатить можно через меню 💰 Мой бюджет → 📤 Я оплатил"
+                    notify_text += "Оплатить можно через меню 💰 Мой бюджет → 📤 Я оплатил"
                     await bot.send_message(member.telegram_id, notify_text)
                 except Exception:
                     logger.exception("Failed to notify member %s about fee assessment", member.telegram_id)
@@ -862,7 +850,7 @@ async def _show_pending_page(callback: CallbackQuery, page: int) -> None:
                 # Different payment/receipt -> delete old photo message, send the correct one.
                 # The old message may be a text menu (first navigation) or another payment's photo.
                 old_msg = callback.message
-                new_msg = await old_msg.answer_photo(
+                await old_msg.answer_photo(
                     p.receipt_photo_id,
                     caption=text,
                     reply_markup=build_kb(kb_rows),
@@ -950,17 +938,17 @@ async def confirm_payment(callback: CallbackQuery) -> None:
                         alloc = min(remaining_to_apply, fine.remaining_amount)
                         if alloc <= 0:
                             continue
-                        fine.paid_amount = (fine.paid_amount or Decimal('0')) + alloc
+                        fine.paid_amount = (fine.paid_amount or Decimal(0)) + alloc
                         if fine.paid_amount >= fine.amount:
                             fine.status = FineStatus.CANCELLED
                             fine.cancelled_at = now_msk()
                         await fine_repo.update(fine)
                         remaining_to_apply -= alloc
                     if remaining_to_apply > 0:
-                        user_model.balance_credit = (user_model.balance_credit or Decimal('0')) + remaining_to_apply
+                        user_model.balance_credit = (user_model.balance_credit or Decimal(0)) + remaining_to_apply
                 else:
                     # Fee payment: add to balance, then apply to ALL fees with remaining amount
-                    user_model.balance_credit = (user_model.balance_credit or Decimal('0')) + Decimal(payment.amount)
+                    user_model.balance_credit = (user_model.balance_credit or Decimal(0)) + Decimal(payment.amount)
                     # Get unpaid fees sorted oldest first (FIFO)
                     all_fees = await fee_repo.list_pending_by_user(payment.user_id)
                     for fee in all_fees:
@@ -972,7 +960,7 @@ async def confirm_payment(callback: CallbackQuery) -> None:
                         apply = min(user_model.balance_credit, remaining)
                         if apply > 0:
                             user_model.balance_credit -= apply
-                            fee.paid_amount = (fee.paid_amount or Decimal('0')) + apply
+                            fee.paid_amount = (fee.paid_amount or Decimal(0)) + apply
                             if fee.paid_amount >= fee.amount:
                                 fee.status = FeeStatus.PAID
                                 fee.paid_at = now_msk()
@@ -1017,7 +1005,7 @@ async def confirm_payment(callback: CallbackQuery) -> None:
                     # Re-fetch affected fees to get updated paid_amount and status
                     if affected_fee_ids:
                         fee_details = []
-                        total_remaining = Decimal("0")
+                        total_remaining = Decimal(0)
                         for fid in affected_fee_ids:
                             f = await fee_repo.get_by_id(fid)
                             if f:
@@ -1030,13 +1018,13 @@ async def confirm_payment(callback: CallbackQuery) -> None:
                                     fee_details.append(f"📅 {period} — оплачено <b>{f.paid_amount:,.2f}₽</b> из <b>{f.amount:,.2f}₽</b> (ост. {rem:,.2f}₽)")
                         if total_remaining > 0:
                             detail_text = (
-                                f"\n\n💳 <b>Частично погашен:</b>\n"
+                                "\n\n💳 <b>Частично погашен:</b>\n"
                                 + "\n".join(fee_details)
                                 + f"\n\n📊 Остаток долга: <b>{total_remaining:,.2f}₽</b>"
                             )
                         else:
                             detail_text = (
-                                f"\n\n🎉 <b>Долг полностью погашен!</b>\n"
+                                "\n\n🎉 <b>Долг полностью погашен!</b>\n"
                                 + "\n".join(fee_details)
                             )
                     else:
@@ -1181,8 +1169,8 @@ async def view_member(callback: CallbackQuery) -> None:
         fees = await fee_repo.list_pending_by_user(user_id)
         fines = await fine_repo.list_active_by_user(user_id)
 
-        fees_total = sum((f.remaining_amount for f in fees), Decimal("0"))
-        fines_total = sum((f.remaining_amount for f in fines), Decimal("0"))
+        fees_total = sum((f.remaining_amount for f in fees), Decimal(0))
+        fines_total = sum((f.remaining_amount for f in fines), Decimal(0))
 
         text = (
             f"👤 <b>{member.full_name}</b>\n"
@@ -1222,11 +1210,13 @@ async def remind_user(callback: CallbackQuery) -> None:
 
         fees = await fee_repo.list_pending_by_user(user.id)
         fines = await fine_repo.list_active_by_user(user.id)
-        fees_total = sum((f.remaining_amount for f in fees), Decimal("0"))
-        fines_total = sum((f.amount for f in fines), Decimal("0"))
-        total = fees_total + fines_total
+        fees_total = sum((f.remaining_amount for f in fees), Decimal(0))
+        fines_total = sum((f.remaining_amount for f in fines), Decimal(0))
+        gross_total = fees_total + fines_total
+        credit = user.balance_credit or Decimal(0)
+        net_total = max(gross_total - credit, Decimal(0))
 
-        if total <= 0:
+        if net_total <= 0:
             await safe_edit(
                 callback,
                 f"✅ У {user.full_name} нет задолженности.",
@@ -1240,7 +1230,7 @@ async def remind_user(callback: CallbackQuery) -> None:
             await callback.bot.send_message(
                 user.telegram_id,
                 debt_reminder_text(
-                    f"{total:,.2f}₽",
+                    f"{net_total:,.2f}₽",
                     f"{fees_total:,.2f}₽",
                     f"{fines_total:,.2f}₽",
                     payment_details,
@@ -1270,7 +1260,6 @@ async def show_stats(callback: CallbackQuery) -> None:
         pay_repo = PaymentRepository(session)
         fee_repo = FeeRepository(session)
         fine_repo = FineRepository(session)
-        exp_repo = __import__("src.infrastructure.repositories.expense_repository", fromlist=["ExpenseRepository"])
         from src.infrastructure.repositories.expense_repository import ExpenseRepository
         exp_repo = ExpenseRepository(session)
         user_repo = UserRepository(session)
@@ -1321,18 +1310,20 @@ async def send_reminders(callback: CallbackQuery) -> None:
             fees = await fee_repo.list_pending_by_user(member.id)
             fines = await fine_repo.list_active_by_user(member.id)
 
-            fees_total = sum((f.remaining_amount for f in fees), Decimal("0"))
-            fines_total = sum((f.remaining_amount for f in fines), Decimal("0"))
-            total = fees_total + fines_total
+            fees_total = sum((f.remaining_amount for f in fees), Decimal(0))
+            fines_total = sum((f.remaining_amount for f in fines), Decimal(0))
+            gross_total = fees_total + fines_total
+            credit = member.balance_credit or Decimal(0)
+            net_total = max(gross_total - credit, Decimal(0))
 
-            if total <= 0:
+            if net_total <= 0:
                 continue
 
             try:
                 await callback.bot.send_message(
                     member.telegram_id,
                     debt_reminder_text(
-                        f"{total:,.2f}₽",
+                        f"{net_total:,.2f}₽",
                         f"{fees_total:,.2f}₽",
                         f"{fines_total:,.2f}₽",
                         payment_details,
@@ -1647,7 +1638,7 @@ async def fine_allocate(callback: CallbackQuery) -> None:
                 break
 
             alloc = min(Decimal(payment.amount), fine.remaining_amount)
-            fine.paid_amount = (fine.paid_amount or Decimal('0')) + alloc
+            fine.paid_amount = (fine.paid_amount or Decimal(0)) + alloc
             if fine.paid_amount >= fine.amount:
                 fine.status = FineStatus.CANCELLED
                 fine.cancelled_at = now_msk()
@@ -1656,7 +1647,7 @@ async def fine_allocate(callback: CallbackQuery) -> None:
             remaining = Decimal(payment.amount) - alloc
             user_model = await user_repo.get_by_id(payment.user_id)
             if user_model and remaining > 0:
-                user_model.balance_credit = (user_model.balance_credit or Decimal('0')) + remaining
+                user_model.balance_credit = (user_model.balance_credit or Decimal(0)) + remaining
                 await user_repo.update(user_model)
 
             payment.status = PaymentStatus.CONFIRMED
@@ -1682,7 +1673,7 @@ async def fine_allocate(callback: CallbackQuery) -> None:
                         user_model.telegram_id,
                         f"✅ Ваш платёж на <b>{payment.amount:,.2f}₽</b> подтверждён и распределён на штраф #{fine_id}.",
                     )
-            except Exception as exc:
+            except Exception:
                 logger.exception("fine_allocate: failed to notify user %s", payment.user_id)
 
             succeeded = True
@@ -1718,7 +1709,7 @@ async def fine_overflow(callback: CallbackQuery) -> None:
 
             user_model = await user_repo.get_by_id(payment.user_id)
             if user_model:
-                user_model.balance_credit = (user_model.balance_credit or Decimal('0')) + Decimal(payment.amount)
+                user_model.balance_credit = (user_model.balance_credit or Decimal(0)) + Decimal(payment.amount)
                 await user_repo.update(user_model)
 
             payment.status = PaymentStatus.CONFIRMED
@@ -1744,7 +1735,7 @@ async def fine_overflow(callback: CallbackQuery) -> None:
                         user_model.telegram_id,
                         f"✅ Ваш платёж на <b>{payment.amount:,.2f}₽</b> подтверждён и зачислен на баланс.",
                     )
-            except Exception as exc:
+            except Exception:
                 logger.exception("fine_overflow: failed to notify user %s", payment.user_id)
 
             succeeded = True
