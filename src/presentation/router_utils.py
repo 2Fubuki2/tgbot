@@ -40,6 +40,24 @@ async def register_or_get_user(
                 user = await repo.update(user)
             except ValueError:
                 pass  # нельзя обновить — оставляем как есть
+
+        # Если ранее исключённый пользователь снова добавлен админом через вайтлист
+        if user.status != UserStatus.ACTIVE:
+            if message.from_user.id in admin_ids:
+                user.status = UserStatus.ACTIVE
+                user.role = UserRole.ADMIN
+                user = await repo.update(user)
+            elif message.from_user.username:
+                wl_repo = WhitelistRepository(session)
+                invite = await wl_repo.get_by_username(message.from_user.username)
+                if invite and not invite.is_used:
+                    user.status = UserStatus.ACTIVE
+                    user.role = invite.role
+                    if invite.full_name:
+                        user.full_name = invite.full_name
+                    user = await repo.update(user)
+                    await wl_repo.mark_used(invite.id)
+
         return user
 
     # 1. Проверяем, является ли пользователь администратором из config/env

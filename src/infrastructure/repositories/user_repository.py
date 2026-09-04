@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from decimal import Decimal
 
-from sqlalchemy import cast, func, or_, select, String
+from sqlalchemy import cast, delete, func, or_, select, String, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.domain.entities.user import User
@@ -127,13 +127,65 @@ class UserRepository(IUserRepository):
             await self.session.flush()
 
     async def hard_delete(self, user_id: int) -> None:
-        """Physically remove user row from database."""
+        """Physically remove user row and all associated personal data from database."""
         stmt = select(UserModel).where(UserModel.id == user_id)
         result = await self.session.execute(stmt)
         model = result.scalar_one_or_none()
-        if model:
-            await self.session.delete(model)
-            await self.session.flush()
+        if not model:
+            return
+
+        username = (model.username or "").lower()
+
+        # Import dependent models for cascade cleanup
+        from src.infrastructure.database.models.audit_log import AuditLogModel
+        from src.infrastructure.database.models.expense import ExpenseModel
+        from src.infrastructure.database.models.payment import PaymentModel
+        from src.infrastructure.database.models.whitelist import WhitelistModel
+
+        # Find a fallback user ID for actor references that are NOT NULL (e.g. issued_by, created_by)
+        fallback_stmt = select(UserModel.id).where(UserModel.id != user_id).limit(1)
+        fallback_res = await self.session.execute(fallback_stmt)
+        fallback_id = fallback_res.scalar_one_or_none()
+
+        # 1. Delete user's fines
+        await self.session.execute(delete(FineModel).where(FineModel.user_id == user_id))
+        # Detach fines issued or cancelled by this user
+        if fallback_id is not None:
+            await self.session.execute(
+                update(FineModel).where(FineModel.issued_by == user_id).values(issued_by=fallback_id)
+            )
+        await self.session.execute(
+            update(FineModel).where(FineModel.cancelled_by == user_id).values(cancelled_by=None)
+        )
+
+        # 2. Delete user's monthly fees
+        await self.session.execute(delete(MonthlyFeeModel).where(MonthlyFeeModel.user_id == user_id))
+
+        # 3. Delete user's payments
+        await self.session.execute(delete(PaymentModel).where(PaymentModel.user_id == user_id))
+        # Detach payments confirmed by this user
+        await self.session.execute(
+            update(PaymentModel).where(PaymentModel.confirmed_by == user_id).values(confirmed_by=None)
+        )
+
+        # 4. Detach expenses created by this user
+        if fallback_id is not None:
+            await self.session.execute(
+                update(ExpenseModel).where(ExpenseModel.created_by == user_id).values(created_by=fallback_id)
+            )
+
+        # 5. Delete audit logs associated with this user
+        await self.session.execute(delete(AuditLogModel).where(AuditLogModel.user_id == user_id))
+
+        # 6. Delete whitelist invite for this user's username if any
+        if username:
+            await self.session.execute(
+                delete(WhitelistModel).where(func.lower(WhitelistModel.username) == username)
+            )
+
+        # 7. Physically delete the user record
+        await self.session.delete(model)
+        await self.session.flush()
 
     async def count_active(self) -> int:
         stmt = select(func.count(UserModel.id)).where(UserModel.status == UserStatus.ACTIVE.value)

@@ -110,17 +110,25 @@ def create_dispatcher() -> Dispatcher:
         BotStatusMiddleware,
         NavigationMiddleware,
         PersistentMenuMiddleware,
+        UserAccessMiddleware,
     )
 
     persistent_menu_middleware = PersistentMenuMiddleware()
     navigation_middleware = NavigationMiddleware()
     bot_status_middleware = BotStatusMiddleware()
+    user_access_middleware = UserAccessMiddleware()
 
-    # Navigation и bot status — обычные (внутренние) middleware для message/callback
-    dp.message.middleware(navigation_middleware)
+    # Bot status — проверяет, включен ли бот глобально
     dp.message.middleware(bot_status_middleware)
-    dp.callback_query.middleware(navigation_middleware)
     dp.callback_query.middleware(bot_status_middleware)
+
+    # User access — проверяет права и блокирует исключённых пользователей
+    dp.message.middleware(user_access_middleware)
+    dp.callback_query.middleware(user_access_middleware)
+
+    # Navigation — отслеживание истории экранов
+    dp.message.middleware(navigation_middleware)
+    dp.callback_query.middleware(navigation_middleware)
 
     # Persistent menu — outer middleware: оборачивает ВСЕ события,
     # выполняет post-processing (восстановление панели) после handler'а

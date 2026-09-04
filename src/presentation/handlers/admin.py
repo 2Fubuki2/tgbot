@@ -637,13 +637,16 @@ async def admin_delete_execute(callback: CallbackQuery) -> None:
                     "previous_role": previous_role,
                 },
             ))
+        await session.commit()
 
         await safe_edit(
             callback,
-            f"🗑 Пользователь <b>{name}</b> удалён.",
-            reply_markup=back_keyboard(),
+            f"🗑 Пользователь <b>{name}</b> исключён из клуба.\n\n"
+            f"Доступ к боту для него заблокирован. Финансовая история сохранена.",
+            reply_markup=back_keyboard("admin_users"),
         )
-    await callback.answer()
+        break
+    await callback.answer("Пользователь исключён")
 
 
 @router.callback_query(F.data.startswith("admin_hard_delete_execute:"))
@@ -667,23 +670,29 @@ async def admin_hard_delete_execute(callback: CallbackQuery) -> None:
 
         name = user.full_name
         tg_id = user.telegram_id
-        await repo.hard_delete(user_id)
 
         admin = await repo.get_by_telegram_id(callback.from_user.id)
-        if admin:
-            await audit_repo.create(AuditLog(
-                user_id=int(admin.id) if admin.id is not None else 0,
-                action="hard_delete_user",
-                entity_type="user",
-                entity_id=user_id,
-                details={"deleted_user": name, "telegram_id": tg_id},
-            ))
+        admin_id = int(admin.id) if admin and admin.id is not None else 1
+
+        await repo.hard_delete(user_id)
+
+        await audit_repo.create(AuditLog(
+            user_id=admin_id,
+            action="hard_delete_user",
+            entity_type="user",
+            entity_id=user_id,
+            details={"deleted_user": name, "telegram_id": tg_id},
+        ))
+        await session.commit()
 
         await safe_edit(
             callback,
-            f"🧨 Пользователь <b>{name}</b> удалён навсегда.",
-            reply_markup=back_keyboard(),
+            f"🧨 Пользователь <b>{name}</b> удалён навсегда.\n\n"
+            f"Все данные и история полностью стёрты из базы данных.",
+            reply_markup=back_keyboard("admin_users"),
         )
+        break
+    await callback.answer("Пользователь удалён навсегда")
 
 
 @router.callback_query(F.data.startswith("user_actions:"))
@@ -762,12 +771,16 @@ async def admin_restore(callback: CallbackQuery) -> None:
                 entity_id=int(user.id) if user.id is not None else 0,
                 details={"restored_user": user.full_name, "user_id": int(user.id) if user.id is not None else 0},
             ))
+        await session.commit()
 
         await safe_edit(
             callback,
             f"✅ Пользователь <b>{user.full_name}</b> восстановлен и получил доступ.",
-            reply_markup=back_keyboard(),
+            reply_markup=back_keyboard("admin_users"),
         )
+        break
+    await callback.answer("Доступ восстановлен")
+
 
 
 # ─── Админ: настройки ────────────────────────────

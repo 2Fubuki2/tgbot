@@ -140,23 +140,30 @@ class PersistentMenuMiddleware(BaseMiddleware):
             return
 
         # Определяем роль пользователя для кнопок
-        role = UserRole.MEMBER  # default
+        from src.config.settings import settings
+        from src.domain.value_objects.user_status import UserStatus
+
+        role: UserRole | None = None
         if user_id is not None:
-            try:
-                from src.infrastructure.database.session import (
-                    get_session,
-                )
-                from src.infrastructure.repositories.user_repository import (
-                    UserRepository,
-                )
-                async for session in get_session():
-                    repo = UserRepository(session)
-                    user = await repo.get_by_telegram_id(user_id)
-                    if user and user.role in UserRole:
-                        role = user.role
+            if user_id in settings.admin_ids:
+                role = UserRole.ADMIN
+            else:
+                try:
+                    from src.infrastructure.database.session import get_session
+                    from src.infrastructure.repositories.user_repository import (
+                        UserRepository,
+                    )
+                    async for session in get_session():
+                        repo = UserRepository(session)
+                        user = await repo.get_by_telegram_id(user_id)
+                        if user and user.status == UserStatus.ACTIVE and user.role in UserRole:
+                            role = user.role
                         break
-            except Exception:
-                logger.warning("Failed to lookup user role for keyboard", exc_info=True)
+                except Exception:
+                    logger.warning("Failed to lookup user role for keyboard", exc_info=True)
+
+        if role is None:
+            return
 
         kb = build_reply_keyboard(role)
         try:
