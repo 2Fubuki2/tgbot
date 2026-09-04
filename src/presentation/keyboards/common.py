@@ -131,9 +131,24 @@ def cancel_keyboard() -> InlineKeyboardMarkup:
 def admin_users_keyboard() -> InlineKeyboardMarkup:
     return build_kb([
         [("➕ Добавить участника", "admin_user_add")],
+        [("⏳ Ожидают входа (инвайты)", "admin_invites_list")],
         [("📋 Все участники", "admin_user_list")],
         [MAIN_MENU_BTN],
     ])
+
+
+def admin_invites_keyboard(invites: list[tuple[int, str, str, str]]) -> InlineKeyboardMarkup:
+    """Invites list with delete buttons: list of (invite_id, username, full_name, role)."""
+    rows = []
+    for inv_id, username, full_name, role in invites:
+        rows.append([
+            (f"@{username} • {full_name} ({role})", "noop"),
+            ("🗑 Отменить", f"admin_invite_delete:{inv_id}"),
+        ])
+    rows.append([("🔙 Назад к пользователям", "admin_users")])
+    rows.append([MAIN_MENU_BTN])
+    return build_kb(rows)
+
 
 
 def user_actions_keyboard(user_id: int, status: str | None = None) -> InlineKeyboardMarkup:
@@ -158,9 +173,14 @@ def user_actions_keyboard(user_id: int, status: str | None = None) -> InlineKeyb
 
 def admin_users_list_keyboard(users: list[tuple[int, str]], page: int = 0, highlight_id: int | None = None) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(text="➕ Добавить участника", callback_data="admin_user_add"),
+        InlineKeyboardButton(text="⏳ Инвайты", callback_data="admin_invites_list"),
+    )
     per_page = 8
     start = page * per_page
     chunk = users[start:start + per_page]
+
 
     for user_id, name in chunk:
         prefix = "🔷 " if user_id == highlight_id else ""

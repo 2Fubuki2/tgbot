@@ -7,6 +7,7 @@ from src.domain.entities.fine import Fine
 from src.domain.entities.monthly_fee import MonthlyFee
 from src.domain.entities.payment import Payment
 from src.domain.entities.user import User
+from src.domain.entities.whitelist import WhitelistEntry
 from src.domain.value_objects.role import UserRole
 
 
@@ -190,3 +191,21 @@ class IClubSettingsRepository(ABC):
 
     @abstractmethod
     async def set_treasury_adjustment(self, value: Decimal) -> Decimal: ...
+
+
+class IWhitelistRepository(ABC):
+    @abstractmethod
+    async def get_by_username(self, username: str) -> WhitelistEntry | None: ...
+
+    @abstractmethod
+    async def create(self, entry: WhitelistEntry) -> WhitelistEntry: ...
+
+    @abstractmethod
+    async def list_pending(self) -> list[WhitelistEntry]: ...
+
+    @abstractmethod
+    async def mark_used(self, entry_id: int) -> None: ...
+
+    @abstractmethod
+    async def delete(self, entry_id: int) -> None: ...
+

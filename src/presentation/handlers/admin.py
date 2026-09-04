@@ -15,6 +15,7 @@ from sqlalchemy import select
 from src.domain.entities.audit_log import AuditLog
 from src.domain.entities.expense import Expense
 from src.domain.entities.user import User
+from src.domain.entities.whitelist import WhitelistEntry
 from src.domain.value_objects.expense_category import ExpenseCategory
 from src.domain.value_objects.role import UserRole
 from src.domain.value_objects.user_status import UserStatus
@@ -26,10 +27,14 @@ from src.infrastructure.repositories.fine_repository import FineRepository
 from src.infrastructure.repositories.payment_repository import PaymentRepository
 from src.infrastructure.repositories.settings_repository import ClubSettingsRepository
 from src.infrastructure.repositories.user_repository import UserRepository
+from src.infrastructure.repositories.whitelist_repository import WhitelistRepository
+from src.infrastructure.timezone import now_msk
 from src.presentation.export_pdf import generate_export_pdf
 from src.presentation.keyboards.common import (
+    admin_invites_keyboard,
     admin_settings_keyboard,
     admin_users_list_keyboard,
+
     back_keyboard,
     build_kb,
     cancel_keyboard,
@@ -75,9 +80,8 @@ async def admin_user_add_start(callback: CallbackQuery, state: FSMContext) -> No
     await safe_edit(
         callback,
         "➕ <b>Добавление участника</b>\n\n"
-        "Введите <b>Telegram ID</b> или <b>@username</b> пользователя:\n"
-        "• ID: число из @userinfobot\n"
-        "• @username: если пользователь уже запускал бота",
+        "Введите <b>@username</b> (например, <code>@wheresyourego</code>) или <b>Telegram ID</b> (число):\n\n"
+        "💡 <i>Если пользователь ещё не писал боту, он будет добавлен в список приглашений (Whitelist). При первом запуске бота доступ откроется автоматически.</i>",
         reply_markup=back_keyboard(),
     )
     await callback.answer()
@@ -89,36 +93,85 @@ async def admin_user_add_tgid(message: Message, state: FSMContext) -> None:
         return
     text = message.text.strip()
 
-    # @username — resolve via Telegram API
-    if text.startswith("@"):
+    # Если введён @username или строковый никнейм
+    if text.startswith("@") or not text.isdigit():
+        clean_username = text.lstrip("@").strip().lower()
+        if not clean_username:
+            await message.answer("❌ Введите корректный @username или числовой Telegram ID.")
+            return
+
+        # 1. Проверяем: нет ли уже такого активного пользователя в базе
+        async for session in get_session():
+            u_repo = UserRepository(session)
+            found_users = await u_repo.search(clean_username)
+            matching_user = next(
+                (u for u in found_users if (u.username or "").lower() == clean_username and u.status == UserStatus.ACTIVE),
+                None,
+            )
+            if matching_user:
+                await message.answer(
+                    f"⚠️ Пользователь <b>@{clean_username}</b> уже зарегистрирован в клубе!\n\n"
+                    f"👤 Имя: <b>{matching_user.full_name}</b>\n"
+                    f"📌 Роль: <b>{matching_user.role.value}</b>\n\n"
+                    f"Вы можете изменить его роль или статус в меню «Все участники»."
+                )
+                return
+
+            # Проверяем, нет ли уже активного приглашения в вайтлисте
+            wl_repo = WhitelistRepository(session)
+            existing_wl = await wl_repo.get_by_username(clean_username)
+            if existing_wl and not existing_wl.is_used:
+                await message.answer(
+                    f"⚠️ Пользователь <b>@{clean_username}</b> уже находится в списке приглашений!\n"
+                    f"Роль: <b>{existing_wl.role.value}</b>, Имя: <b>{existing_wl.full_name}</b>.\n"
+                    f"Бот ожидает, пока пользователь отправит команду /start."
+                )
+                return
+
+        # 2. Пытаемся получить chat через Telegram API (если он уже писал боту или есть в общем чате)
+        resolved_tg_id = None
+        resolved_name = None
+        resolved_username = clean_username
         try:
-            chat = await message.bot.get_chat(text)  # type: ignore[union-attr]
-            tg_id = chat.id
-            resolved_name = chat.full_name or chat.first_name or text
-            resolved_username = chat.username
+            chat = await message.bot.get_chat(f"@{clean_username}")  # type: ignore[union-attr]
+            resolved_tg_id = chat.id
+            resolved_name = chat.full_name or chat.first_name
+            resolved_username = chat.username or clean_username
+        except Exception:
+            pass
+
+        if resolved_tg_id:
             await state.update_data(
-                telegram_id=tg_id,
+                telegram_id=resolved_tg_id,
                 resolved_name=resolved_name,
                 resolved_username=resolved_username,
+                is_whitelist=False,
             )
-        except Exception:
+            await state.set_state(AddUserStates.waiting_full_name)
             await message.answer(
-                "❌ Не удалось найти пользователя по этому username.\n"
-                "Убедитесь, что пользователь уже запускал бота.\n"
-                "Попробуйте числовой ID из @userinfobot."
+                f"✅ Найден в Telegram: <b>{resolved_name}</b> (ID: <code>{resolved_tg_id}</code>)\n\n"
+                f"Введите <b>имя</b> участника (или отправьте /skip, чтобы оставить «{resolved_name}»):"
             )
             return
-        await state.set_state(AddUserStates.waiting_full_name)
-        await message.answer(
-            f"Введите <b>имя</b> участника (найдено: {resolved_name}):\n"
-            f"или отправьте /skip чтобы оставить «{resolved_name}»"
-        )
-        return
+        else:
+            # Пользователь ещё не писал боту — сохраняем в Whitelist
+            await state.update_data(
+                username=clean_username,
+                resolved_name=clean_username,
+                is_whitelist=True,
+            )
+            await state.set_state(AddUserStates.waiting_full_name)
+            await message.answer(
+                f"ℹ️ Пользователь <b>@{clean_username}</b> ещё не запускал бота.\n"
+                f"Он будет добавлен в <b>список приглашений (Whitelist)</b>.\n\n"
+                f"Введите <b>имя</b> участника (или отправьте /skip, чтобы оставить «@{clean_username}»):"
+            )
+            return
 
     # Числовой ID
     try:
         tg_id = int(text)
-        await state.update_data(telegram_id=tg_id)
+        await state.update_data(telegram_id=tg_id, is_whitelist=False)
     except ValueError:
         await message.answer("❌ Введите Telegram ID (число) или @username.")
         return
@@ -156,6 +209,47 @@ async def admin_user_add_role(callback: CallbackQuery, state: FSMContext) -> Non
 
     async for session in get_session():
         repo = UserRepository(session)
+        wl_repo = WhitelistRepository(session)
+        ar = AuditLogRepository(session)
+
+        admin = await repo.get_by_telegram_id(callback.from_user.id)
+        admin_id = int(admin.id) if admin and admin.id is not None else 0
+
+        # Сценарий Whitelist (предрегистрация по никнейму)
+        if data.get("is_whitelist"):
+            username = data["username"]
+            full_name = data["full_name"]
+            entry = WhitelistEntry(
+                id=None,
+                username=username,
+                full_name=full_name,
+                role=role,
+                created_by=callback.from_user.id,
+                created_at=now_msk(),
+                is_used=False,
+            )
+            await wl_repo.create(entry)
+
+            await ar.create(AuditLog(
+                user_id=admin_id,
+                action="whitelist_user",
+                entity_type="whitelist",
+                details={"username": username, "full_name": full_name, "role": role.value},
+            ))
+
+            await safe_edit(
+                callback,
+                f"✅ <b>Приглашение создано!</b>\n\n"
+                f"👤 Имя: <b>{escape(full_name)}</b>\n"
+                f"🔖 Никнейм: <b>@{escape(username)}</b>\n"
+                f"👑 Роль: <b>{role.value}</b>\n\n"
+                f"Пользователь добавлен в список приглашённых клуба. Как только он перейдёт в бота и нажмёт /start, бот автоматически предоставит ему доступ.",
+                reply_markup=back_keyboard("admin_users"),
+            )
+            await state.clear()
+            break
+
+        # Сценарий добавления по известному Telegram ID
         existing = await repo.get_by_telegram_id(data["telegram_id"])
         if existing:
             await safe_edit(
@@ -174,17 +268,13 @@ async def admin_user_add_role(callback: CallbackQuery, state: FSMContext) -> Non
         )
         created = await repo.create(user)
 
-        # Audit
-        admin = await repo.get_by_telegram_id(callback.from_user.id)
-        if admin:
-            ar = AuditLogRepository(session)
-            await ar.create(AuditLog(
-                user_id=int(admin.id) if admin.id is not None else 0,
-                action="add_user",
-                entity_type="user",
-                entity_id=int(created.id) if created.id is not None else 0,
-                details={"telegram_id": data["telegram_id"], "role": role_str},
-            ))
+        await ar.create(AuditLog(
+            user_id=admin_id,
+            action="add_user",
+            entity_type="user",
+            entity_id=int(created.id) if created.id is not None else 0,
+            details={"telegram_id": data["telegram_id"], "role": role_str},
+        ))
 
         users = await repo.list_all()
         users_list = [
@@ -204,8 +294,67 @@ async def admin_user_add_role(callback: CallbackQuery, state: FSMContext) -> Non
             f"👥 <b>Список участников</b> (выделен новый пользователь):",
             reply_markup=admin_users_list_keyboard(users_list, highlight_id=int(created.id) if created.id is not None else None),
         )
-    await state.clear()
+        await state.clear()
+        break
+
     await callback.answer()
+
+
+@router.callback_query(F.data == "admin_invites_list")
+async def admin_invites_list(callback: CallbackQuery) -> None:
+    if not await require_role(callback, UserRole.ADMIN):
+        return
+    async for session in get_session():
+        wl_repo = WhitelistRepository(session)
+        invites = await wl_repo.list_pending()
+        if not invites:
+            await safe_edit(
+                callback,
+                "⏳ <b>Список приглашений (Whitelist)</b>\n\n"
+                "Сейчас нет активных непринятых приглашений.\n"
+                "Все приглашённые участники уже запустили бота или список пуст.",
+                reply_markup=back_keyboard("admin_users"),
+            )
+            break
+
+        text = f"⏳ <b>Ожидают первого входа ({len(invites)})</b>:\n\n"
+        items = []
+        for inv in invites:
+            text += f"• <b>@{escape(inv.username)}</b> — {escape(inv.full_name)} ({inv.role.value})\n"
+            items.append((int(inv.id) if inv.id is not None else 0, inv.username, inv.full_name, inv.role.value))
+
+        text += "\nНажмите «🗑 Отменить», чтобы отозвать приглашение."
+        await safe_edit(
+            callback,
+            text,
+            reply_markup=admin_invites_keyboard(items),
+        )
+        break
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("admin_invite_delete:"))
+async def admin_invite_delete(callback: CallbackQuery) -> None:
+    if not await require_role(callback, UserRole.ADMIN):
+        return
+    if not callback.data:
+        await callback.answer()
+        return
+    invite_id = int(callback.data.split(":")[1])
+    async for session in get_session():
+        wl_repo = WhitelistRepository(session)
+        await wl_repo.delete(invite_id)
+        ar = AuditLogRepository(session)
+        await ar.create(AuditLog(
+            user_id=callback.from_user.id,
+            action="delete_invite",
+            entity_type="whitelist",
+            entity_id=invite_id,
+        ))
+        await callback.answer("Приглашение отозвано", show_alert=False)
+        break
+    await admin_invites_list(callback)
+
 
 
 @router.callback_query(F.data == "admin_users")

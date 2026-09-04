@@ -50,8 +50,13 @@ async def cmd_start(message: Message) -> None:
         )
         record_bot_message(sent.chat.id, sent.message_id)
     else:
-        sent = await message.answer("❌ Ошибка регистрации. Попробуйте позже.")
+        sent = await message.answer(
+            "🔒 <b>Доступ ограничен</b>\n\n"
+            "Этот бот предназначен исключительно для участников клуба.\n"
+            "Если вы состоите в клубе, обратитесь к администратору, чтобы ваш аккаунт добавили в список участников."
+        )
         record_bot_message(sent.chat.id, sent.message_id)
+
 
 
 @router.message(Command("menu"))
@@ -489,7 +494,19 @@ async def cmd_show_button(message: Message) -> None:
 @router.message(Command("hidebutton"))
 async def cmd_hide_button(message: Message, state: FSMContext) -> None:
     """Скрыть persistent-панель кнопок под полем ввода."""
+    from aiogram.types import ReplyKeyboardRemove
+
     await state.clear()
-    await message.answer("🔽 Панель скрыта", reply_markup=None, remove_keyboard=True)
+    await message.answer(
+        "Панель скрыта. Чтобы вернуть — отправьте /button",
+        reply_markup=ReplyKeyboardRemove(),
+    )
+
+
+@router.callback_query(F.data == "noop")
+async def cb_noop(callback: CallbackQuery) -> None:
+    """Ignore click on informational non-clickable button."""
+    await callback.answer()
+
 
 

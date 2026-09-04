@@ -5,6 +5,7 @@ from src.infrastructure.database.models.monthly_fee import MonthlyFeeModel
 from src.infrastructure.database.models.payment import PaymentModel
 from src.infrastructure.database.models.settings import ClubSettingsModel
 from src.infrastructure.database.models.user import UserModel
+from src.infrastructure.database.models.whitelist import WhitelistModel
 
 __all__ = [
     "AuditLogModel",
@@ -14,4 +15,6 @@ __all__ = [
     "MonthlyFeeModel",
     "PaymentModel",
     "UserModel",
+    "WhitelistModel",
 ]
+
