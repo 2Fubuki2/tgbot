@@ -78,6 +78,8 @@ async def register_or_get_user(
             await wl_repo.mark_used(invite.id)
             return created_user
 
+
+
     # 3. Закрытый клуб: пользователь не в вайтлисте и не в admin_ids
     return None
 

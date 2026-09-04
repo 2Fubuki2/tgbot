@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -73,3 +73,5 @@ class WhitelistRepository(IWhitelistRepository):
         stmt = delete(WhitelistModel).where(WhitelistModel.id == entry_id)
         await self.session.execute(stmt)
         await self.session.flush()
+
+

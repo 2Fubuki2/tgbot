@@ -236,6 +236,7 @@ async def admin_user_add_role(callback: CallbackQuery, state: FSMContext) -> Non
                 entity_type="whitelist",
                 details={"username": username, "full_name": full_name, "role": role.value},
             ))
+            await session.commit()
 
             await safe_edit(
                 callback,
@@ -248,6 +249,7 @@ async def admin_user_add_role(callback: CallbackQuery, state: FSMContext) -> Non
             )
             await state.clear()
             break
+
 
         # Сценарий добавления по известному Telegram ID
         existing = await repo.get_by_telegram_id(data["telegram_id"])
@@ -275,6 +277,8 @@ async def admin_user_add_role(callback: CallbackQuery, state: FSMContext) -> Non
             entity_id=int(created.id) if created.id is not None else 0,
             details={"telegram_id": data["telegram_id"], "role": role_str},
         ))
+        await session.commit()
+
 
         users = await repo.list_all()
         users_list = [
@@ -351,8 +355,10 @@ async def admin_invite_delete(callback: CallbackQuery) -> None:
             entity_type="whitelist",
             entity_id=invite_id,
         ))
+        await session.commit()
         await callback.answer("Приглашение отозвано", show_alert=False)
         break
+
     await admin_invites_list(callback)
 
 
